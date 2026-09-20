@@ -62,7 +62,7 @@ Thêm cấu hình siêu đơn giản (Zero-Config — không cần chỉ định
 | `find_definition` | `name: string`, `file_path?: string`, `container?: string`, `workspace_path?: string` | **Độ chính xác cao**: Tra cứu nơi định nghĩa của symbol. Hỗ trợ lọc theo `file_path` và `container` để phân biệt các hàm trùng tên giữa các file. |
 | `get_call_graph` | `name: string`, `file_path?: string`, `container?: string`, `workspace_path?: string` | **Độ chính xác cao**: Trả về đồ thị cuộc gọi: ai gọi hàm này (**callers** kèm dòng code) và hàm này gọi những hàm nào (**callees** + **callee_details** chứa danh sách định nghĩa ứng viên). |
 | `fuzzy_search_symbols`| `query: string`, `kind?: string`, `limit?: int`, `workspace_path?: string` | Tìm kiếm mờ symbol theo tên hoặc lọc theo loại (`function`, `struct`, `class`,...). |
-| `get_project_stats` | `workspace_path?: string` | Báo cáo tổng quan số lượng file, số symbol, phân bổ theo ngôn ngữ trong dự án (Rust, Python, TypeScript, JavaScript). |
+| `get_project_stats` | `workspace_path?: string` | Báo cáo tổng quan số lượng file, số symbol, phân bổ theo ngôn ngữ trong dự án (Rust, Python, TypeScript, JavaScript, Lua, Go, C, C++). |
 
 ---
 
@@ -72,6 +72,9 @@ Thêm cấu hình siêu đơn giản (Zero-Config — không cần chỉ định
 - 🐍 **Python**: `.py` (functions, methods, classes, docstrings `"""..."""`)
 - 📘 **TypeScript / TSX**: `.ts`, `.tsx` (functions, arrow functions, classes, interfaces, type aliases)
 - 💛 **JavaScript / JSX**: `.js`, `.jsx`, `.mjs`, `.cjs` (functions, classes, methods, arrow functions)
+- 🌙 **Lua**: `.lua` (functions, local functions, methods `obj:method`, tables/classes `Table.method`, docstrings `---`)
+- 🐹 **Go**: `.go` (functions, methods `(s *Receiver) Method`, structs, interfaces, type aliases, docstrings)
+- ⚡ **C / C++**: `.c`, `.cpp`, `.cc`, `.cxx`, `.h`, `.hpp`, `.hh`, `.hxx` (functions, classes, structs, methods, prototypes, namespaces)
 
 ---
 
@@ -86,7 +89,7 @@ Thêm cấu hình siêu đơn giản (Zero-Config — không cần chỉ định
                                       v
                        +-----------------------------+
                        |      src/mcp_server.rs      |
-                       |   (5 MCP Analysis Tools)    |
+                       |   (6 MCP Analysis Tools)    |
                        +--------------+--------------+
                                       |
                                       v

@@ -449,6 +449,12 @@ impl CodeStore {
                 "tsx" => "TypeScript (TSX)",
                 "js" | "mjs" | "cjs" => "JavaScript",
                 "jsx" => "JavaScript (JSX)",
+                "lua" => "Lua",
+                "go" => "Go",
+                "c" => "C",
+                "h" => "C/C++ Header",
+                "cpp" | "cc" | "cxx" => "C++",
+                "hpp" | "hh" | "hxx" => "C++ Header",
                 other => other,
             };
             *lang_counts.entry(lang_label.to_string()).or_insert(0) += 1;
