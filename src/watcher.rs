@@ -34,8 +34,8 @@ pub fn relative_to_root(path: &Path, root: &Path) -> Option<String> {
     }
 
     #[cfg(not(windows))]
-    if path_str.starts_with(clean_root_str) {
-        let rel = path_str[clean_root_str.len()..].trim_start_matches('/');
+    if let Some(suffix) = path_str.strip_prefix(clean_root_str) {
+        let rel = suffix.trim_start_matches('/');
         return Some(rel.to_string());
     }
 

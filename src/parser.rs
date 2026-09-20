@@ -919,7 +919,7 @@ fn extract_python_body_doc(node: Node, source: &[u8]) -> Option<String> {
                 if let Some(str_node) = child.child(0) {
                     if str_node.kind() == "string" {
                         let text = node_text(str_node, source).trim();
-                        let trimmed = text.trim_start_matches(|c: char| matches!(c, 'r' | 'R' | 'u' | 'U' | 'b' | 'B' | 'f' | 'F'));
+                        let trimmed = text.trim_start_matches(['r', 'R', 'u', 'U', 'b', 'B', 'f', 'F']);
                         let unquoted = trimmed
                             .trim_start_matches("\"\"\"")
                             .trim_end_matches("\"\"\"")
