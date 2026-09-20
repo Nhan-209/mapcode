@@ -2247,6 +2247,7 @@ fn extract_types(
         SupportedLanguage::Rust => {
             if kind == "struct_item" || kind == "enum_item" {
                 if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = node_text(name_node, source).to_string();
                     let mut supertypes = Vec::new();
                     
                     // Check preceding attribute_item siblings
