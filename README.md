@@ -26,10 +26,8 @@ Dự án được tối ưu hoá theo triết lý **100% Cloud Build**:
 Tải file nén tương ứng với hệ điều hành của bạn từ mục **Releases**:
 - **Windows (x64)**: `mapcode-windows-x64.zip` (giải nén lấy `mapcode.exe`)
 - **Linux (x64)**: `mapcode-linux-x64.tar.gz`
-- **macOS Apple Silicon (M1/M2/M3/M4)**: `mapcode-macos-arm64.tar.gz`
-- **macOS Intel (x64)**: `mapcode-macos-x64.tar.gz`
 
-Lưu file binary vào một thư mục tiện lợi, ví dụ: `C:\tools\mapcode.exe` (Windows) hoặc `/usr/local/bin/mapcode` (Linux/macOS).
+Lưu file binary vào một thư mục tiện lợi, ví dụ: `C:\tools\mapcode.exe` (Windows) hoặc `/usr/local/bin/mapcode` (Linux).
 
 ---
 

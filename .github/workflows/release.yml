@@ -25,14 +25,6 @@ jobs:
             target: x86_64-unknown-linux-gnu
             binary_name: mapcode
             asset_name: mapcode-linux-x64.tar.gz
-          - os: macos-13
-            target: x86_64-apple-darwin
-            binary_name: mapcode
-            asset_name: mapcode-macos-x64.tar.gz
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            binary_name: mapcode
-            asset_name: mapcode-macos-arm64.tar.gz
 
     steps:
       - name: Checkout code
