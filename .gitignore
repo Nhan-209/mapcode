@@ -1,0 +1,19 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Cargo lock (optional for libraries, ignored if desired for pure source)
+Cargo.lock
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp

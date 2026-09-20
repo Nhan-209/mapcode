@@ -1,0 +1,31 @@
+[package]
+name = "mapcode"
+version = "0.1.0"
+edition = "2021"
+authors = ["MapCode Contributors"]
+description = "Blazing-fast in-memory code map MCP server for AI assistants"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/Nhan-209/mapcode"
+keywords = ["mcp", "code-map", "tree-sitter", "ast", "ai"]
+categories = ["development-tools"]
+
+[dependencies]
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "io-std", "sync", "time"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dashmap = "5.5.3"
+ignore = "0.4.22"
+notify = "6.1.1"
+tree-sitter = "0.20.10"
+tree-sitter-rust = "0.20.4"
+tree-sitter-python = "0.20.4"
+tree-sitter-javascript = "0.20.1"
+tree-sitter-typescript = "0.20.3"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

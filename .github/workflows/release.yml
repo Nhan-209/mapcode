@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary_name: mapcode.exe
+            asset_name: mapcode-windows-x64.zip
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_name: mapcode
+            asset_name: mapcode-linux-x64.tar.gz
+          - os: macos-13
+            target: x86_64-apple-darwin
+            binary_name: mapcode
+            asset_name: mapcode-macos-x64.tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary_name: mapcode
+            asset_name: mapcode-macos-arm64.tar.gz
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package binary (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target/${{ matrix.target }}/release/${{ matrix.binary_name }} -DestinationPath ${{ matrix.asset_name }}
+
+      - name: Package binary (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          tar -czvf ${{ matrix.asset_name }} -C target/${{ matrix.target }}/release ${{ matrix.binary_name }}
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.asset_name }}
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: ${{ matrix.asset_name }}
+          generate_release_notes: true
