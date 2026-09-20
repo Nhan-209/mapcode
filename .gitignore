@@ -1,5 +1,8 @@
 # Rust build artifacts
 /target/
+/bin/
+*.exe
+*.zip
 **/*.rs.bk
 
 # Cargo lock (optional for libraries, ignored if desired for pure source)
