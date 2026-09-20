@@ -9,16 +9,6 @@ MapCode parses and indexes your codebase in RAM using **Tree-sitter**, maintaini
 - ⚡ Fuzzy symbol search with intelligent ranking.
 - 📊 Project-level code metrics and language statistics.
 
----
-
-## 🚀 Triết lý "Zero Local Build" (Không tốn tài nguyên máy cá nhân)
-
-Dự án được tối ưu hoá theo triết lý **100% Cloud Build**:
-- **Không cần cài đặt Rust hay Cargo trên máy tính của bạn**: Máy cấu hình thấp vẫn sử dụng mượt mà không lo giật lag hay tốn RAM/CPU để biên dịch.
-- **GitHub Actions tự động hoá hoàn toàn**: Mọi commit và tag push đều được kiểm tra cú pháp (`cargo check`), chạy unit test (`cargo test`), kiểm tra chất lượng code (`clippy`), và biên dịch siêu tối ưu (`lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `strip = true`).
-- **Tải binary chạy ngay từ Releases**: Bạn chỉ việc tải file chạy (`.exe` cho Windows hoặc binary cho Linux/macOS) từ tab [Releases](https://github.com/Nhan-209/mapcode/releases) về và thêm vào cấu hình MCP client.
-
----
 
 ## 📦 Cài đặt & Cấu hình MCP Client
 
@@ -110,31 +100,6 @@ Thêm cấu hình siêu đơn giản (Zero-Config — không cần chỉ định
 1. **Initial Walk (`ignore` crate)**: Quét toàn bộ repo khi khởi động, tôn trọng `.gitignore` và bỏ qua các thư mục rác (`target/`, `node_modules/`, `.git/`).
 2. **Incremental Realtime Watcher (`notify` crate)**: Theo dõi sự kiện thay đổi file trên hệ thống. Khi bạn lưu file, MapCode chỉ re-parse đúng file đó và cập nhật đồ thị liên kết trên RAM trong vài mili-giây mà không quét lại toàn bộ repo.
 3. **Pure Stdio JSON-RPC**: Mọi log thông tin được đẩy ra `stderr` (`eprintln!`), đảm bảo luồng `stdout` thuần khiết 100% cho giao thức MCP.
-
----
-
-## 🧪 CI/CD & Đóng Góp (Development Workflow)
-
-Vì dự án tuân thủ triết lý không build local:
-1. Bạn chỉ cần chỉnh sửa code trong thư mục `src/`.
-2. Commit và push lên GitHub:
-   ```bash
-   git add .
-   git commit -m "feat: enhance call graph resolution"
-   git push origin main
-   ```
-3. GitHub Actions (`.github/workflows/ci.yml`) sẽ tự động chạy:
-   - `cargo check`
-   - `cargo test`
-   - `cargo clippy -- -D warnings`
-4. Khi muốn phát hành phiên bản mới, chỉ cần tạo tag (ví dụ `v0.1.0`):
-   ```bash
-   git tag v0.1.0
-   git push origin v0.1.0
-   ```
-   GitHub Actions (`.github/workflows/release.yml`) sẽ tự động build binary cho Windows, Linux, macOS và đính kèm trực tiếp vào mục Releases.
-
----
 
 ## 📄 Bản Quyền (License)
 
