@@ -224,6 +224,7 @@ impl CodeStore {
         Err(format!("File '{}' not found in indexed project.", path))
     }
 
+    #[allow(dead_code)]
     pub fn find_definition(&self, name: &str) -> Vec<DefinitionResult> {
         self.find_definition_advanced(name, None, None)
     }
@@ -294,6 +295,7 @@ impl CodeStore {
         results
     }
 
+    #[allow(dead_code)]
     pub fn get_call_graph(&self, name: &str) -> CallGraphResult {
         self.get_call_graph_advanced(name, None, None)
     }
