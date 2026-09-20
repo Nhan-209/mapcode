@@ -175,7 +175,8 @@ impl CodeStore {
     }
 
     pub fn get_file_outline(&self, path: &str) -> Result<FileOutline, String> {
-        let clean_path = clean_relative_path(&self.root_path, path);
+        let root = self.root_path();
+        let clean_path = clean_relative_path(&root, path);
 
         // 1. Direct match
         if let Some(syms) = self.file_symbols.get(&clean_path) {
@@ -202,7 +203,7 @@ impl CodeStore {
         }
 
         // 3. On-demand load from disk
-        let full_path = self.root_path.join(&clean_path);
+        let full_path = root.join(&clean_path);
         if full_path.is_file() {
             if let Some(lang) = SupportedLanguage::from_path(&full_path) {
                 if let Ok(content) = std::fs::read_to_string(&full_path) {
