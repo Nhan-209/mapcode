@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     watcher::scan_and_index_project(&store, &root_path);
 
     // 2. Start realtime background watcher
-    let _watcher = match watcher::start_watcher(store.clone(), root_path) {
+    let initial_watcher = match watcher::start_watcher(store.clone(), root_path) {
         Ok(w) => {
             eprintln!("[MapCode] Realtime file watcher active.");
             Some(w)
@@ -68,8 +68,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    let watcher_handle = Arc::new(watcher::WatcherHandle::new(store.clone(), initial_watcher));
+
     // 3. Start Stdio MCP Server loop
-    mcp_server::run_stdio_server(store).await?;
+    mcp_server::run_stdio_server(store, watcher_handle).await?;
 
     Ok(())
 }

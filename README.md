@@ -35,73 +35,34 @@ Lưu file binary vào một thư mục tiện lợi, ví dụ: `C:\tools\mapcode
 
 ### Bước 2: Cấu hình vào AI Assistant
 
-#### 1. Claude Desktop
-Mở file cấu hình Claude Desktop:
-- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-
-Thêm cấu hình sau:
+#### 1. Claude Desktop / Cursor / Antigravity / Cline / Roo-Code
+Thêm cấu hình siêu đơn giản (Zero-Config — không cần chỉ định `args`):
 ```json
 {
   "mcpServers": {
     "mapcode": {
-      "command": "C:\\tools\\mapcode.exe",
-      "args": ["D:\\path\\to\\your\\project"]
+      "command": "C:\\tools\\mapcode.exe"
     }
   }
 }
 ```
-*(Nếu dùng macOS/Linux, thay `command` bằng đường dẫn tới binary `mapcode` và `args` bằng thư mục dự án).*
+*(Nếu dùng macOS/Linux, thay `command` bằng đường dẫn tới binary `mapcode`).*
+
+> [!TIP]
+> **Tự động nhận diện Workspace**: Khi kết nối, MapCode tự động lấy thư mục workspace hiện tại của bạn từ MCP Client. Nếu muốn chuyển sang bất kỳ dự án nào khác, AI có thể tự động gọi tool `set_workspace(path)` mà bạn **không bao giờ cần phải mở file config để chỉnh sửa lại**.
 
 ---
 
-#### 2. Cursor IDE
-Tạo hoặc mở file cấu hình `.cursor/mcp.json` trong thư mục dự án (hoặc trong Cursor Settings -> Features -> MCP):
-```json
-{
-  "mcpServers": {
-    "mapcode": {
-      "command": "C:/tools/mapcode.exe",
-      "args": ["."]
-    }
-  }
-}
-```
-
----
-
-#### 3. Antigravity / Cline / Roo-Code
-Thêm vào file cấu hình MCP (`mcpSettings.json`):
-```json
-{
-  "mcpServers": {
-    "mapcode": {
-      "command": "C:/tools/mapcode.exe",
-      "args": ["${workspaceFolder}"],
-      "disabled": false,
-      "autoApprove": [
-        "get_file_outline",
-        "find_definition",
-        "get_call_graph",
-        "fuzzy_search_symbols",
-        "get_project_stats"
-      ]
-    }
-  }
-}
-```
-
----
-
-## 🛠️ Danh sách 5 Tools MCP Cung Cấp Cho AI
+## 🛠️ Danh sách 6 Tools MCP Cung Cấp Cho AI
 
 | Tên Tool | Tham số | Mô tả |
 | :--- | :--- | :--- |
-| `get_file_outline` | `path: string` | Trích xuất toàn bộ cấu trúc file: các hàm, class, struct, trait, enum kèm số dòng bắt đầu/kết thúc, chữ ký (signature) và docstring. Hỗ trợ cả đường dẫn tương đối và tuyệt đối. |
-| `find_definition` | `name: string` | Tra cứu nhanh nơi định nghĩa của bất kỳ symbol nào trên toàn bộ dự án. Hỗ trợ cả tên đơn (ví dụ: `parse_file`) và qualified name (ví dụ: `Point::distance` hoặc `Calculator.calculate`). |
-| `get_call_graph` | `name: string` | Trả về đồ thị cuộc gọi: ai gọi hàm này (**callers**) và hàm này gọi những hàm nào (**callees**). Hỗ trợ cả qualified name. |
-| `fuzzy_search_symbols`| `query: string`, `kind?: string`, `limit?: int` | Tìm kiếm mờ symbol theo tên hoặc lọc theo loại (`function`, `struct`, `class`, `trait`,...). Chấp nhận limit dạng số hoặc chuỗi. |
-| `get_project_stats` | *(không)* | Báo cáo tổng quan số lượng file, số symbol, phân bổ theo ngôn ngữ trong dự án (Rust, Python, TypeScript, JavaScript). |
+| `set_workspace` | `path: string` | **Đa dụng mọi dự án**: Chuyển đổi hoặc re-index thư mục workspace tức thì trên RAM mà không cần restart server hay sửa config. |
+| `get_file_outline` | `path: string`, `workspace_path?: string` | Trích xuất toàn bộ cấu trúc file: các hàm, class, struct, trait, enum kèm số dòng, chữ ký (signature) và docstring. |
+| `find_definition` | `name: string`, `file_path?: string`, `container?: string`, `workspace_path?: string` | **Độ chính xác cao**: Tra cứu nơi định nghĩa của symbol. Hỗ trợ lọc theo `file_path` và `container` để phân biệt các hàm trùng tên giữa các file. |
+| `get_call_graph` | `name: string`, `file_path?: string`, `container?: string`, `workspace_path?: string` | **Độ chính xác cao**: Trả về đồ thị cuộc gọi: ai gọi hàm này (**callers** kèm dòng code) và hàm này gọi những hàm nào (**callees** + **callee_details** chứa danh sách định nghĩa ứng viên). |
+| `fuzzy_search_symbols`| `query: string`, `kind?: string`, `limit?: int`, `workspace_path?: string` | Tìm kiếm mờ symbol theo tên hoặc lọc theo loại (`function`, `struct`, `class`,...). |
+| `get_project_stats` | `workspace_path?: string` | Báo cáo tổng quan số lượng file, số symbol, phân bổ theo ngôn ngữ trong dự án (Rust, Python, TypeScript, JavaScript). |
 
 ---
 

@@ -187,6 +187,62 @@ fn handle_event(store: &Arc<CodeStore>, root: &Path, event: Event) {
     }
 }
 
+pub struct WatcherHandle {
+    watcher: std::sync::Mutex<Option<RecommendedWatcher>>,
+    store: Arc<CodeStore>,
+}
+
+impl WatcherHandle {
+    pub fn new(store: Arc<CodeStore>, initial_watcher: Option<RecommendedWatcher>) -> Self {
+        Self {
+            watcher: std::sync::Mutex::new(initial_watcher),
+            store,
+        }
+    }
+
+    pub fn switch_workspace(&self, new_root: PathBuf) -> Result<usize, String> {
+        let clean_root = strip_unc_prefix(&new_root);
+        if !clean_root.exists() || !clean_root.is_dir() {
+            return Err(format!(
+                "Directory '{}' does not exist or is not a directory.",
+                clean_root.display()
+            ));
+        }
+
+        // 1. Drop previous watcher
+        {
+            let mut guard = self.watcher.lock().map_err(|e| e.to_string())?;
+            *guard = None;
+        }
+
+        // 2. Clear store and update root
+        self.store.clear();
+        self.store.set_root_path(clean_root.clone());
+        let count = scan_and_index_project(&self.store, &clean_root);
+
+        // 3. Start new watcher
+        match start_watcher(self.store.clone(), clean_root.clone()) {
+            Ok(new_w) => {
+                let mut guard = self.watcher.lock().map_err(|e| e.to_string())?;
+                *guard = Some(new_w);
+                eprintln!(
+                    "[MapCode] Realtime watcher active on: {}",
+                    clean_root.display()
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "[MapCode] Warning: Failed to start file watcher for {}: {}",
+                    clean_root.display(),
+                    e
+                );
+            }
+        }
+
+        Ok(count)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,9 +1,11 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::store::CodeStore;
+use crate::watcher::{strip_unc_prefix, WatcherHandle};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -35,9 +37,87 @@ pub struct JsonRpcError {
     pub data: Option<Value>,
 }
 
+pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
+    let stripped = uri.strip_prefix("file://")?;
+    let decoded = url_decode(stripped);
+
+    #[cfg(windows)]
+    {
+        let trimmed = decoded.trim_start_matches('/');
+        Some(PathBuf::from(trimmed.replace('/', "\\")))
+    }
+    #[cfg(not(windows))]
+    {
+        Some(PathBuf::from(decoded))
+    }
+}
+
+fn url_decode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            let h1 = chars.next().unwrap_or('0');
+            let h2 = chars.next().unwrap_or('0');
+            let hex_str = format!("{}{}", h1, h2);
+            if let Ok(val) = u8::from_str_radix(&hex_str, 16) {
+                result.push(val as char);
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+pub fn extract_workspace_from_init(params: Option<&Value>) -> Option<PathBuf> {
+    let params = params?;
+
+    // 1. Try rootUri
+    if let Some(uri) = params.get("rootUri").and_then(|v| v.as_str()) {
+        if let Some(path) = uri_to_path(uri) {
+            return Some(path);
+        }
+    }
+
+    // 2. Try rootPath
+    if let Some(p) = params.get("rootPath").and_then(|v| v.as_str()) {
+        if !p.is_empty() {
+            return Some(PathBuf::from(p));
+        }
+    }
+
+    // 3. Try workspaceFolders
+    if let Some(folders) = params.get("workspaceFolders").and_then(|v| v.as_array()) {
+        if let Some(first) = folders.first() {
+            if let Some(uri) = first.get("uri").and_then(|v| v.as_str()) {
+                if let Some(path) = uri_to_path(uri) {
+                    return Some(path);
+                }
+            }
+        }
+    }
+
+    None
+}
+
 #[allow(dead_code)]
 pub fn get_tools_list() -> Value {
     json!([
+        {
+            "name": "set_workspace",
+            "description": "Switch or re-index the active workspace directory. Allows AI to instantly analyze ANY project on your machine with ZERO manual config changes.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Directory path of the project to analyze (e.g. 'D:/laptrinh/duan/my_app' or '.')"
+                    }
+                },
+                "required": ["path"]
+            }
+        },
         {
             "name": "get_file_outline",
             "description": "Get structured outline of symbols (functions, classes, structs, traits, methods) in a file with line numbers and signatures.",
@@ -47,6 +127,10 @@ pub fn get_tools_list() -> Value {
                     "path": {
                         "type": "string",
                         "description": "Relative path to the file within the project (e.g. 'src/main.rs')"
+                    },
+                    "workspace_path": {
+                        "type": "string",
+                        "description": "Optional workspace root directory to switch to before querying"
                     }
                 },
                 "required": ["path"]
@@ -54,13 +138,25 @@ pub fn get_tools_list() -> Value {
         },
         {
             "name": "find_definition",
-            "description": "Find definitions of a symbol (function, class, struct, type, trait) across the entire indexed codebase.",
+            "description": "Find definitions of a symbol (function, class, struct, type, trait) across the entire indexed codebase with high precision.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
                         "description": "Name of the symbol to find (e.g. 'parse_file' or 'CodeStore::get_call_graph')"
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Optional file path or filename suffix to disambiguate identical symbol names"
+                    },
+                    "container": {
+                        "type": "string",
+                        "description": "Optional class, struct, or trait name to disambiguate methods"
+                    },
+                    "workspace_path": {
+                        "type": "string",
+                        "description": "Optional workspace root directory to switch to before querying"
                     }
                 },
                 "required": ["name"]
@@ -68,13 +164,25 @@ pub fn get_tools_list() -> Value {
         },
         {
             "name": "get_call_graph",
-            "description": "Get bidirectional call graph for a function/method: who calls it (callers) and what functions it calls (callees).",
+            "description": "Get bidirectional call graph for a function/method: who calls it (callers with line & signature) and what functions it calls (callees + resolved candidate definitions).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
                         "description": "Name of the function or method to query"
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Optional file path or filename suffix to disambiguate identical function names"
+                    },
+                    "container": {
+                        "type": "string",
+                        "description": "Optional class or struct name to disambiguate methods"
+                    },
+                    "workspace_path": {
+                        "type": "string",
+                        "description": "Optional workspace root directory to switch to before querying"
                     }
                 },
                 "required": ["name"]
@@ -98,6 +206,10 @@ pub fn get_tools_list() -> Value {
                     "limit": {
                         "type": "integer",
                         "description": "Maximum number of results to return (default 30)"
+                    },
+                    "workspace_path": {
+                        "type": "string",
+                        "description": "Optional workspace root directory to switch to before querying"
                     }
                 },
                 "required": ["query"]
@@ -105,16 +217,24 @@ pub fn get_tools_list() -> Value {
         },
         {
             "name": "get_project_stats",
-            "description": "Get high-level summary statistics of the indexed codebase (file counts, language breakdown, total symbols, functions, types).",
+            "description": "Get high-level summary statistics of the indexed codebase (active root path, file counts, language breakdown, total symbols, functions, types).",
             "inputSchema": {
                 "type": "object",
-                "properties": {}
+                "properties": {
+                    "workspace_path": {
+                        "type": "string",
+                        "description": "Optional workspace root directory to switch to before querying"
+                    }
+                }
             }
         }
     ])
 }
 
-pub async fn run_stdio_server(store: Arc<CodeStore>) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_stdio_server(
+    store: Arc<CodeStore>,
+    watcher: Arc<WatcherHandle>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
     let mut stdout = tokio::io::stdout();
@@ -162,7 +282,7 @@ pub async fn run_stdio_server(store: Arc<CodeStore>) -> Result<(), Box<dyn std::
             continue;
         }
 
-        let resp = handle_request(&req, &store).await;
+        let resp = handle_request(&req, &store, &watcher).await;
         let out = serde_json::to_string(&resp)? + "\n";
         stdout.write_all(out.as_bytes()).await?;
         stdout.flush().await?;
@@ -172,10 +292,25 @@ pub async fn run_stdio_server(store: Arc<CodeStore>) -> Result<(), Box<dyn std::
     Ok(())
 }
 
-async fn handle_request(req: &JsonRpcRequest, store: &Arc<CodeStore>) -> JsonRpcResponse {
+async fn handle_request(
+    req: &JsonRpcRequest,
+    store: &Arc<CodeStore>,
+    watcher: &Arc<WatcherHandle>,
+) -> JsonRpcResponse {
     let id = req.id.clone();
     match req.method.as_str() {
         "initialize" => {
+            // Auto-detect workspace from client initialization if provided
+            if let Some(ws_path) = extract_workspace_from_init(req.params.as_ref()) {
+                if ws_path.exists() && ws_path.is_dir() {
+                    eprintln!(
+                        "[MapCode] Auto-detected workspace from client initialize: {}",
+                        ws_path.display()
+                    );
+                    let _ = watcher.switch_workspace(ws_path);
+                }
+            }
+
             let result = json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": {
@@ -185,7 +320,7 @@ async fn handle_request(req: &JsonRpcRequest, store: &Arc<CodeStore>) -> JsonRpc
                     "name": "mapcode",
                     "version": env!("CARGO_PKG_VERSION")
                 },
-                "instructions": "MapCode provides in-memory code maps, outline, definition lookup, and call graph navigation for fast codebase understanding without searching all files."
+                "instructions": "MapCode provides in-memory code maps, symbol outlines, definition lookups, and bidirectional call graphs with zero configuration. You can switch to any project using the 'set_workspace' tool."
             });
             JsonRpcResponse {
                 jsonrpc: "2.0",
@@ -210,7 +345,7 @@ async fn handle_request(req: &JsonRpcRequest, store: &Arc<CodeStore>) -> JsonRpc
             }
         }
         "tools/call" => {
-            let result = handle_tool_call(req.params.as_ref(), store).await;
+            let result = handle_tool_call(req.params.as_ref(), store, watcher).await;
             match result {
                 Ok(content_text) => JsonRpcResponse {
                     jsonrpc: "2.0",
@@ -258,6 +393,7 @@ async fn handle_request(req: &JsonRpcRequest, store: &Arc<CodeStore>) -> JsonRpc
 async fn handle_tool_call(
     params: Option<&Value>,
     store: &Arc<CodeStore>,
+    watcher: &Arc<WatcherHandle>,
 ) -> Result<String, String> {
     let params_obj = params.ok_or_else(|| "Missing params for tools/call".to_string())?;
     let tool_name = params_obj
@@ -267,7 +403,31 @@ async fn handle_tool_call(
 
     let arguments = params_obj.get("arguments").cloned().unwrap_or(Value::Null);
 
+    // If workspace_path is passed in arguments and differs from current root, switch on the fly
+    if let Some(ws) = arguments.get("workspace_path").and_then(|p| p.as_str()) {
+        let clean = ws.trim().trim_matches('"').trim_matches('\'');
+        let ws_path = PathBuf::from(clean);
+        if ws_path != store.root_path() && ws_path.exists() && ws_path.is_dir() {
+            let _ = watcher.switch_workspace(ws_path);
+        }
+    }
+
     match tool_name {
+        "set_workspace" => {
+            let path = arguments
+                .get("path")
+                .and_then(|p| p.as_str())
+                .ok_or_else(|| "Missing required argument 'path'".to_string())?;
+            let clean_path = path.trim().trim_matches('"').trim_matches('\'');
+            let raw = PathBuf::from(clean_path);
+            let target_dir = match std::fs::canonicalize(&raw) {
+                Ok(p) => strip_unc_prefix(&p),
+                Err(_) => strip_unc_prefix(&raw),
+            };
+            watcher.switch_workspace(target_dir)?;
+            let stats = store.get_project_stats();
+            serde_json::to_string_pretty(&stats).map_err(|e| e.to_string())
+        }
         "get_file_outline" => {
             let path = arguments
                 .get("path")
@@ -282,7 +442,9 @@ async fn handle_tool_call(
                 .get("name")
                 .and_then(|n| n.as_str())
                 .ok_or_else(|| "Missing required argument 'name'".to_string())?;
-            let defs = store.find_definition(name.trim());
+            let file_filter = arguments.get("file_path").and_then(|f| f.as_str());
+            let container_filter = arguments.get("container").and_then(|c| c.as_str());
+            let defs = store.find_definition_advanced(name.trim(), file_filter, container_filter);
             serde_json::to_string_pretty(&defs).map_err(|e| e.to_string())
         }
         "get_call_graph" => {
@@ -290,7 +452,9 @@ async fn handle_tool_call(
                 .get("name")
                 .and_then(|n| n.as_str())
                 .ok_or_else(|| "Missing required argument 'name'".to_string())?;
-            let cg = store.get_call_graph(name.trim());
+            let file_filter = arguments.get("file_path").and_then(|f| f.as_str());
+            let container_filter = arguments.get("container").and_then(|c| c.as_str());
+            let cg = store.get_call_graph_advanced(name.trim(), file_filter, container_filter);
             serde_json::to_string_pretty(&cg).map_err(|e| e.to_string())
         }
         "fuzzy_search_symbols" => {
@@ -323,6 +487,7 @@ mod tests {
     #[tokio::test]
     async fn test_mcp_initialize() {
         let store = Arc::new(CodeStore::new(PathBuf::from(".")));
+        let watcher = Arc::new(WatcherHandle::new(store.clone(), None));
         let req = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(json!(1)),
@@ -330,7 +495,7 @@ mod tests {
             params: Some(json!({})),
         };
 
-        let resp = handle_request(&req, &store).await;
+        let resp = handle_request(&req, &store, &watcher).await;
         assert_eq!(resp.id, Some(json!(1)));
         assert!(resp.error.is_none());
         let result = resp.result.unwrap();
@@ -341,6 +506,7 @@ mod tests {
     #[tokio::test]
     async fn test_mcp_tools_list() {
         let store = Arc::new(CodeStore::new(PathBuf::from(".")));
+        let watcher = Arc::new(WatcherHandle::new(store.clone(), None));
         let req = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(json!(2)),
@@ -348,10 +514,11 @@ mod tests {
             params: None,
         };
 
-        let resp = handle_request(&req, &store).await;
+        let resp = handle_request(&req, &store, &watcher).await;
         let result = resp.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 6);
+        assert!(tools.iter().any(|t| t["name"] == "set_workspace"));
         assert!(tools.iter().any(|t| t["name"] == "get_file_outline"));
         assert!(tools.iter().any(|t| t["name"] == "find_definition"));
         assert!(tools.iter().any(|t| t["name"] == "get_call_graph"));
@@ -362,6 +529,7 @@ mod tests {
     #[tokio::test]
     async fn test_mcp_tool_call_stats_and_fuzzy() {
         let store = Arc::new(CodeStore::new(PathBuf::from(".")));
+        let watcher = Arc::new(WatcherHandle::new(store.clone(), None));
         let req_stats = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(json!(3)),
@@ -372,7 +540,7 @@ mod tests {
             })),
         };
 
-        let resp_stats = handle_request(&req_stats, &store).await;
+        let resp_stats = handle_request(&req_stats, &store, &watcher).await;
         assert!(resp_stats.error.is_none());
         let content = resp_stats.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
         assert!(content.contains("total_files_indexed"));
@@ -385,13 +553,29 @@ mod tests {
             params: Some(json!({
                 "name": "fuzzy_search_symbols",
                 "arguments": {
-                    "query": "test",
-                    "limit": "10"
+                    "query": "nonexistent",
+                    "limit": "5"
                 }
             })),
         };
 
-        let resp_fuzzy = handle_request(&req_fuzzy, &store).await;
+        let resp_fuzzy = handle_request(&req_fuzzy, &store, &watcher).await;
         assert!(resp_fuzzy.error.is_none());
+        let fuzzy_content = resp_fuzzy.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        assert_eq!(fuzzy_content.trim(), "[]");
+    }
+
+    #[test]
+    fn test_uri_to_path_conversion() {
+        #[cfg(windows)]
+        {
+            let path = uri_to_path("file:///D:/projects/my%20app").unwrap();
+            assert!(path.to_string_lossy().contains("my app"));
+        }
+        #[cfg(not(windows))]
+        {
+            let path = uri_to_path("file:///home/user/my%20app").unwrap();
+            assert_eq!(path.to_string_lossy(), "/home/user/my app");
+        }
     }
 }

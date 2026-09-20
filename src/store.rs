@@ -57,12 +57,19 @@ pub struct DefinitionResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CalleeDetail {
+    pub name: String,
+    pub candidates: Vec<SymbolRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct CallGraphResult {
     pub symbol_name: String,
     pub definitions: Vec<SymbolRef>,
     pub callers: Vec<SymbolRef>,
     pub callees: Vec<String>,
+    pub callee_details: Vec<CalleeDetail>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,7 +97,7 @@ pub struct ProjectStats {
 }
 
 pub struct CodeStore {
-    root_path: PathBuf,
+    root_path: std::sync::RwLock<PathBuf>,
     // relative file path -> symbols in that file
     file_symbols: DashMap<String, Vec<Symbol>>,
     // symbol name -> definitions of that symbol
@@ -102,16 +109,25 @@ pub struct CodeStore {
 impl CodeStore {
     pub fn new(root_path: PathBuf) -> Self {
         Self {
-            root_path,
+            root_path: std::sync::RwLock::new(root_path),
             file_symbols: DashMap::new(),
             definitions: DashMap::new(),
             callers: DashMap::new(),
         }
     }
 
-    #[allow(dead_code)]
-    pub fn root_path(&self) -> &Path {
-        &self.root_path
+    pub fn root_path(&self) -> PathBuf {
+        self.root_path.read().unwrap().clone()
+    }
+
+    pub fn set_root_path(&self, new_root: PathBuf) {
+        *self.root_path.write().unwrap() = new_root;
+    }
+
+    pub fn clear(&self) {
+        self.file_symbols.clear();
+        self.definitions.clear();
+        self.callers.clear();
     }
 
     pub fn remove_file(&self, relative_path: &str) {
@@ -208,6 +224,15 @@ impl CodeStore {
     }
 
     pub fn find_definition(&self, name: &str) -> Vec<DefinitionResult> {
+        self.find_definition_advanced(name, None, None)
+    }
+
+    pub fn find_definition_advanced(
+        &self,
+        name: &str,
+        file_filter: Option<&str>,
+        container_filter: Option<&str>,
+    ) -> Vec<DefinitionResult> {
         let mut results = Vec::new();
 
         if let Some(refs) = self.definitions.get(name) {
@@ -251,12 +276,35 @@ impl CodeStore {
             }
         }
 
+        // Apply filters
+        if let Some(container) = container_filter {
+            results.retain(|r| {
+                r.container_name
+                    .as_deref()
+                    .map(|c| c.eq_ignore_ascii_case(container))
+                    .unwrap_or(false)
+            });
+        }
+
+        if let Some(ff) = file_filter {
+            results.retain(|r| path_suffix_matches(&r.file_path, ff));
+        }
+
         results
     }
 
     pub fn get_call_graph(&self, name: &str) -> CallGraphResult {
+        self.get_call_graph_advanced(name, None, None)
+    }
+
+    pub fn get_call_graph_advanced(
+        &self,
+        name: &str,
+        file_filter: Option<&str>,
+        container_filter: Option<&str>,
+    ) -> CallGraphResult {
         // Resolve actual symbol name if given qualified name like Point::distance
-        let (query_name, container_filter) = if let Some((c, s)) = name.split_once("::") {
+        let (query_name, qualified_container) = if let Some((c, s)) = name.split_once("::") {
             (s, Some(c))
         } else if let Some((c, s)) = name.split_once('.') {
             (s, Some(c))
@@ -264,11 +312,13 @@ impl CodeStore {
             (name, None)
         };
 
+        let effective_container = container_filter.or(qualified_container);
+
         let all_defs = self.definitions.get(query_name)
             .map(|d| d.value().clone())
             .unwrap_or_default();
 
-        let definitions: Vec<SymbolRef> = if let Some(container) = container_filter {
+        let mut definitions: Vec<SymbolRef> = if let Some(container) = effective_container {
             all_defs
                 .into_iter()
                 .filter(|d| d.container_name.as_deref().map(|c| c.eq_ignore_ascii_case(container)).unwrap_or(false))
@@ -277,9 +327,18 @@ impl CodeStore {
             all_defs
         };
 
+        if let Some(ff) = file_filter {
+            definitions.retain(|d| path_suffix_matches(&d.file_path, ff));
+        }
+
         let mut callers: Vec<SymbolRef> = self.callers.get(query_name)
             .map(|c| c.value().iter().cloned().collect())
             .unwrap_or_default();
+
+        if let Some(ff) = file_filter {
+            callers.retain(|c| path_suffix_matches(&c.file_path, ff));
+        }
+
         callers.sort_by(|a, b| a.file_path.cmp(&b.file_path).then(a.start_line.cmp(&b.start_line)));
 
         // Resolve callees called by definitions of this symbol
@@ -296,11 +355,24 @@ impl CodeStore {
         let mut callees: Vec<String> = callee_set.into_iter().collect();
         callees.sort();
 
+        // Build callee details with candidate definitions for high-precision navigation
+        let mut callee_details = Vec::new();
+        for callee in &callees {
+            let candidates = self.definitions.get(callee)
+                .map(|d| d.value().clone())
+                .unwrap_or_default();
+            callee_details.push(CalleeDetail {
+                name: callee.clone(),
+                candidates,
+            });
+        }
+
         CallGraphResult {
             symbol_name: name.to_string(),
             definitions,
             callers,
             callees,
+            callee_details,
         }
     }
 
@@ -394,7 +466,7 @@ impl CodeStore {
         }
 
         ProjectStats {
-            root_path: self.root_path.to_string_lossy().to_string(),
+            root_path: self.root_path().to_string_lossy().to_string(),
             total_files_indexed: self.file_symbols.len(),
             total_symbols_indexed: total_symbols,
             total_functions_and_methods: functions_count,
@@ -544,6 +616,19 @@ mod tests {
         let cg = store.get_call_graph("worker_fn");
         assert_eq!(cg.callers.len(), 1);
         assert_eq!(cg.callers[0].name, "caller_fn");
+
+        let cg_caller = store.get_call_graph("caller_fn");
+        assert_eq!(cg_caller.callees.len(), 1);
+        assert_eq!(cg_caller.callees[0], "worker_fn");
+        assert_eq!(cg_caller.callee_details.len(), 1);
+        assert_eq!(cg_caller.callee_details[0].candidates.len(), 1);
+        assert_eq!(cg_caller.callee_details[0].candidates[0].file_path, "src/worker.rs");
+
+        // Advanced filter test
+        let defs_filtered = store.find_definition_advanced("worker_fn", Some("worker.rs"), None);
+        assert_eq!(defs_filtered.len(), 1);
+        let defs_mismatch = store.find_definition_advanced("worker_fn", Some("other.rs"), None);
+        assert_eq!(defs_mismatch.len(), 0);
 
         // Fuzzy search test
         let matches = store.fuzzy_search_symbols("worker", None, 10);
