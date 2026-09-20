@@ -41,7 +41,22 @@ pub fn get_architecture_tree(store: &CodeStore, max_depth: usize) -> ModuleNode 
             dir
         };
 
-        dir_to_files.entry(dir_key).or_default().push(file_path.clone());
+        dir_to_files.entry(dir_key.clone()).or_default().push(file_path.clone());
+
+        // Ensure all ancestor directory levels exist in the module tree
+        if dir_key != "root" {
+            let mut current_ancestor = Path::new(&dir_key);
+            while let Some(parent) = current_ancestor.parent() {
+                let p_str = parent.to_string_lossy().replace('\\', "/");
+                if p_str.is_empty() || p_str == "." {
+                    dir_to_files.entry("root".to_string()).or_default();
+                    break;
+                } else {
+                    dir_to_files.entry(p_str.clone()).or_default();
+                    current_ancestor = Path::new(parent);
+                }
+            }
+        }
     }
 
     // 2. Build module-level dependency graph to compute Ca, Ce, Instability

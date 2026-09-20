@@ -2247,16 +2247,40 @@ fn extract_types(
         SupportedLanguage::Rust => {
             if kind == "struct_item" || kind == "enum_item" {
                 if let Some(name_node) = node.child_by_field_name("name") {
-                    let name = node_text(name_node, source).to_string();
                     let mut supertypes = Vec::new();
+                    
+                    // Check preceding attribute_item siblings
+                    let mut cur = node.prev_named_sibling();
+                    while let Some(prev) = cur {
+                        if prev.kind() == "attribute_item" {
+                            let attr_text = node_text(prev, source);
+                            if let Some(derive_pos) = attr_text.find("derive(") {
+                                let after = &attr_text[derive_pos + 7..];
+                                if let Some(end_paren) = after.find(')') {
+                                    let derive_list = &after[..end_paren];
+                                    for d in derive_list.split(',') {
+                                        let d_clean = d.trim().to_string();
+                                        if !d_clean.is_empty() && !supertypes.contains(&d_clean) {
+                                            supertypes.push(d_clean);
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            break;
+                        }
+                        cur = prev.prev_named_sibling();
+                    }
+
+                    // Check within node itself
                     let raw = node_text(node, source);
-                    if let Some(derive_pos) = raw.find("#[derive(") {
-                        let after = &raw[derive_pos + 9..];
+                    if let Some(derive_pos) = raw.find("derive(") {
+                        let after = &raw[derive_pos + 7..];
                         if let Some(end_paren) = after.find(')') {
                             let derive_list = &after[..end_paren];
                             for d in derive_list.split(',') {
                                 let d_clean = d.trim().to_string();
-                                if !d_clean.is_empty() {
+                                if !d_clean.is_empty() && !supertypes.contains(&d_clean) {
                                     supertypes.push(d_clean);
                                 }
                             }
@@ -2475,17 +2499,27 @@ fn extract_types(
                     if let Some(type_node) = node.child_by_field_name("type") {
                         if type_node.kind() == "struct_type" {
                             let mut supertypes = Vec::new();
-                            if let Some(fields) = type_node.child_by_field_name("fields") {
-                                for i in 0..fields.child_count() {
-                                    if let Some(field) = fields.child(i) {
-                                        if field.kind() == "field_declaration" {
-                                            if field.child_by_field_name("name").is_none() {
-                                                if let Some(t) = field.child_by_field_name("type") {
-                                                    let embedded_name = node_text(t, source).trim().trim_start_matches('*').to_string();
-                                                    if !embedded_name.is_empty() {
-                                                        supertypes.push(embedded_name);
-                                                    }
+                            for i in 0..type_node.child_count() {
+                                if let Some(c) = type_node.child(i) {
+                                    let mut field_nodes = Vec::new();
+                                    if c.kind() == "field_declaration_list" {
+                                        for j in 0..c.child_count() {
+                                            if let Some(f) = c.child(j) {
+                                                if f.kind() == "field_declaration" {
+                                                    field_nodes.push(f);
                                                 }
+                                            }
+                                        }
+                                    } else if c.kind() == "field_declaration" {
+                                        field_nodes.push(c);
+                                    }
+
+                                    for field in field_nodes {
+                                        if field.child_by_field_name("name").is_none() {
+                                            let text = node_text(field, source).trim().trim_start_matches('*').trim();
+                                            let id = text.split_whitespace().next().unwrap_or(text);
+                                            if !id.is_empty() && !supertypes.contains(&id.to_string()) {
+                                                supertypes.push(id.to_string());
                                             }
                                         }
                                     }
@@ -2535,20 +2569,17 @@ fn extract_types(
                     for i in 0..node.child_count() {
                         if let Some(child) = node.child(i) {
                             if child.kind() == "base_class_clause" {
-                                for j in 0..child.child_count() {
-                                    if let Some(spec) = child.child(j) {
-                                        if spec.kind() == "base_specifier" {
-                                            let text = node_text(spec, source).trim();
-                                            let clean = text
-                                                .replace("public", "")
-                                                .replace("protected", "")
-                                                .replace("private", "")
-                                                .replace("virtual", "");
-                                            let s_clean = clean.trim().to_string();
-                                            if !s_clean.is_empty() {
-                                                supertypes.push(s_clean);
-                                            }
-                                        }
+                                let text = node_text(child, source);
+                                let trimmed = text.trim_start_matches(':').trim();
+                                for part in trimmed.split(',') {
+                                    let clean = part
+                                        .replace("public", "")
+                                        .replace("protected", "")
+                                        .replace("private", "")
+                                        .replace("virtual", "");
+                                    let s_clean = clean.trim().to_string();
+                                    if !s_clean.is_empty() && !supertypes.contains(&s_clean) {
+                                        supertypes.push(s_clean);
                                     }
                                 }
                             }
