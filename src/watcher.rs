@@ -85,6 +85,7 @@ pub fn should_ignore(path: &Path) -> bool {
 }
 
 /// Initial cold repository scan using `ignore::WalkBuilder`.
+#[allow(dead_code)]
 pub fn scan_and_index_project(store: &Arc<CodeStore>, root: &Path) -> usize {
     use ignore::WalkBuilder;
     eprintln!("[MapCode] Scanning repository at: {}", root.display());

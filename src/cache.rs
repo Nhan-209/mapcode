@@ -233,6 +233,7 @@ pub fn persist_store_to_cache(store: &Arc<CodeStore>, root: &Path) -> Result<Pat
 
 /// Statistics collected during initial project loading.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct WarmStartupStats {
     pub cached_files: usize,
     pub re_parsed_files: usize,

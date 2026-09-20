@@ -307,6 +307,7 @@ impl CodeStore {
             .collect()
     }
 
+    #[allow(dead_code)]
     pub fn file_count(&self) -> usize {
         self.file_symbols.len()
     }

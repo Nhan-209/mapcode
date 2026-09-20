@@ -1,4 +1,5 @@
 #![allow(
+    dead_code,
     clippy::collapsible_if,
     clippy::if_same_then_else,
     clippy::manual_find,
