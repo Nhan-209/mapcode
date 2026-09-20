@@ -83,10 +83,10 @@ pub fn compute_impact(store: &CodeStore, target: &str, max_depth: usize) -> Impa
                 continue;
             }
             for item in items {
-                if !item.is_external {
-                    if item.source_path == *t_file || item.source_path.ends_with(t_file) || t_file.ends_with(&item.source_path) {
-                        dependent_files_set.insert(importer_file.clone());
-                    }
+                if !item.is_external
+                    && (item.source_path == *t_file || item.source_path.ends_with(t_file) || t_file.ends_with(&item.source_path))
+                {
+                    dependent_files_set.insert(importer_file.clone());
                 }
             }
         }

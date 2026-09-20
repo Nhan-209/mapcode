@@ -101,12 +101,7 @@ fn resolve_file_key(store: &CodeStore, query: &str) -> Option<String> {
     if all_files.iter().any(|f| f == query) {
         return Some(query.to_string());
     }
-    for file in all_files {
-        if path_suffix_matches(&file, query) {
-            return Some(file);
-        }
-    }
-    None
+    all_files.into_iter().find(|file| path_suffix_matches(file, query))
 }
 
 /// Resolves an import source string (e.g. "./store" or "crate::parser") relative to the importer file
@@ -226,7 +221,7 @@ fn find_cycles_for_node(graph: &HashMap<String, Vec<String>>, start_node: &str) 
         0,
     );
 
-    cycles.sort_by(|a, b| a.len().cmp(&b.len()));
+    cycles.sort_by_key(|a| a.len());
     cycles.dedup();
     cycles
 }

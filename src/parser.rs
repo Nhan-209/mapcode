@@ -2110,22 +2110,7 @@ fn extract_imports(
         SupportedLanguage::JavaScript
         | SupportedLanguage::TypeScript
         | SupportedLanguage::Tsx => {
-            if kind == "import_statement" {
-                let line = node.start_position().row + 1;
-                if let Some(source_node) = node.child_by_field_name("source") {
-                    let raw = node_text(source_node, source).trim();
-                    let spec = raw.trim_matches(['\'', '"']).to_string();
-                    if !spec.is_empty() {
-                        let is_external = is_external_import(&spec, lang);
-                        imports.push(ImportItem {
-                            source_path: file_path.to_string(),
-                            specifier: spec,
-                            is_external,
-                            line,
-                        });
-                    }
-                }
-            } else if kind == "export_statement" {
+            if kind == "import_statement" || kind == "export_statement" {
                 let line = node.start_position().row + 1;
                 if let Some(source_node) = node.child_by_field_name("source") {
                     let raw = node_text(source_node, source).trim();

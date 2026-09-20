@@ -1,3 +1,10 @@
+#![allow(
+    clippy::collapsible_if,
+    clippy::if_same_then_else,
+    clippy::manual_find,
+    clippy::unnecessary_sort_by
+)]
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
