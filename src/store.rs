@@ -3,34 +3,10 @@ use std::path::{Path, PathBuf};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 
-use crate::parser::{parse_file, SupportedLanguage, Symbol, SymbolKind};
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub struct SymbolRef {
-    pub name: String,
-    pub kind: SymbolKind,
-    pub file_path: String,
-    pub start_line: usize,
-    pub end_line: usize,
-    pub signature: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub container_name: Option<String>,
-}
-
-impl From<&Symbol> for SymbolRef {
-    fn from(sym: &Symbol) -> Self {
-        Self {
-            name: sym.name.clone(),
-            kind: sym.kind,
-            file_path: sym.file_path.clone(),
-            start_line: sym.start_line,
-            end_line: sym.end_line,
-            signature: sym.signature.clone(),
-            container_name: sym.container_name.clone(),
-        }
-    }
-}
+pub use crate::parser::{
+    parse_file, Entrypoint, ImportItem, ParsedFileResult, SupportedLanguage, Symbol, SymbolKind,
+    SymbolRef, TypeRelation,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
@@ -104,6 +80,12 @@ pub struct CodeStore {
     definitions: DashMap<String, Vec<SymbolRef>>,
     // callee name -> symbols that call it
     callers: DashMap<String, HashSet<SymbolRef>>,
+
+    // Milestone 1 Multi-Dimensional Indices:
+    file_imports: DashMap<String, Vec<ImportItem>>,
+    file_types: DashMap<String, Vec<TypeRelation>>,
+    type_relations: DashMap<String, Vec<TypeRelation>>,
+    file_entrypoints: DashMap<String, Vec<Entrypoint>>,
 }
 
 impl CodeStore {
@@ -113,6 +95,10 @@ impl CodeStore {
             file_symbols: DashMap::new(),
             definitions: DashMap::new(),
             callers: DashMap::new(),
+            file_imports: DashMap::new(),
+            file_types: DashMap::new(),
+            type_relations: DashMap::new(),
+            file_entrypoints: DashMap::new(),
         }
     }
 
@@ -128,6 +114,10 @@ impl CodeStore {
         self.file_symbols.clear();
         self.definitions.clear();
         self.callers.clear();
+        self.file_imports.clear();
+        self.file_types.clear();
+        self.type_relations.clear();
+        self.file_entrypoints.clear();
     }
 
     pub fn remove_file(&self, relative_path: &str) {
@@ -148,21 +138,49 @@ impl CodeStore {
                 }
             }
         }
+
+        self.file_imports.remove(relative_path);
+
+        if let Some((_, old_types)) = self.file_types.remove(relative_path) {
+            for t in old_types {
+                if let Some(mut rels) = self.type_relations.get_mut(&t.name) {
+                    rels.retain(|r| r.file_path != relative_path);
+                }
+            }
+        }
+
+        self.file_entrypoints.remove(relative_path);
     }
 
-    pub fn update_file(&self, relative_path: &str, new_symbols: Vec<Symbol>) {
+    /// Removes a single file or an entire directory prefix from all collections.
+    pub fn remove_path_or_prefix(&self, relative_path: &str) {
         self.remove_file(relative_path);
 
-        for sym in &new_symbols {
+        let prefix = format!("{}/", relative_path.trim_end_matches('/'));
+        let files_to_remove: Vec<String> = self
+            .file_symbols
+            .iter()
+            .filter(|entry| entry.key().starts_with(&prefix))
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        for file in files_to_remove {
+            self.remove_file(&file);
+        }
+    }
+
+    /// Atomic update using ParsedFileResult from Tree-sitter.
+    pub fn update_file_result(&self, relative_path: &str, result: ParsedFileResult) {
+        self.remove_file(relative_path);
+
+        for sym in &result.symbols {
             let sym_ref = SymbolRef::from(sym);
 
-            // Index definition
             self.definitions
                 .entry(sym.name.clone())
                 .or_default()
                 .push(sym_ref.clone());
 
-            // Index callers: sym calls each callee in sym.callees
             for callee in &sym.callees {
                 self.callers
                     .entry(callee.clone())
@@ -171,7 +189,126 @@ impl CodeStore {
             }
         }
 
-        self.file_symbols.insert(relative_path.to_string(), new_symbols);
+        if !result.imports.is_empty() {
+            self.file_imports
+                .insert(relative_path.to_string(), result.imports);
+        }
+
+        for tr in &result.types {
+            self.type_relations
+                .entry(tr.name.clone())
+                .or_default()
+                .push(tr.clone());
+        }
+        if !result.types.is_empty() {
+            self.file_types
+                .insert(relative_path.to_string(), result.types);
+        }
+
+        if !result.entrypoints.is_empty() {
+            self.file_entrypoints
+                .insert(relative_path.to_string(), result.entrypoints);
+        }
+
+        self.file_symbols
+            .insert(relative_path.to_string(), result.symbols);
+    }
+
+    /// Full multi-index atomic update.
+    pub fn update_file_full(
+        &self,
+        relative_path: &str,
+        new_symbols: Vec<Symbol>,
+        new_imports: Vec<ImportItem>,
+        new_types: Vec<TypeRelation>,
+        new_entrypoints: Vec<Entrypoint>,
+    ) {
+        let result = ParsedFileResult {
+            symbols: new_symbols,
+            callers: HashMap::new(),
+            imports: new_imports,
+            types: new_types,
+            entrypoints: new_entrypoints,
+        };
+        self.update_file_result(relative_path, result);
+    }
+
+    /// Backward-compatible wrapper for updating just symbols.
+    pub fn update_file(&self, relative_path: &str, new_symbols: Vec<Symbol>) {
+        self.update_file_full(
+            relative_path,
+            new_symbols,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+    }
+
+    // --- Query Accessors for Downstream Intelligence Engines (M2–M5) ---
+
+    pub fn get_file_imports(&self, path: &str) -> Vec<ImportItem> {
+        let root = self.root_path();
+        let clean = clean_relative_path(&root, path);
+        self.file_imports.get(&clean).map(|v| v.clone()).unwrap_or_default()
+    }
+
+    pub fn get_all_file_imports(&self) -> Vec<(String, Vec<ImportItem>)> {
+        self.file_imports
+            .iter()
+            .map(|kv| (kv.key().clone(), kv.value().clone()))
+            .collect()
+    }
+
+    pub fn get_type_relations(&self, name: &str) -> Vec<TypeRelation> {
+        self.type_relations.get(name).map(|v| v.clone()).unwrap_or_default()
+    }
+
+    pub fn get_all_type_relations(&self) -> Vec<TypeRelation> {
+        let mut list = Vec::new();
+        for item in self.type_relations.iter() {
+            list.extend(item.value().clone());
+        }
+        list
+    }
+
+    pub fn get_file_types(&self, path: &str) -> Vec<TypeRelation> {
+        let root = self.root_path();
+        let clean = clean_relative_path(&root, path);
+        self.file_types.get(&clean).map(|v| v.clone()).unwrap_or_default()
+    }
+
+    pub fn get_file_entrypoints(&self, path: &str) -> Vec<Entrypoint> {
+        let root = self.root_path();
+        let clean = clean_relative_path(&root, path);
+        self.file_entrypoints.get(&clean).map(|v| v.clone()).unwrap_or_default()
+    }
+
+    pub fn get_all_entrypoints(&self, category_filter: Option<&str>) -> Vec<Entrypoint> {
+        let mut results = Vec::new();
+        for item in self.file_entrypoints.iter() {
+            for ep in item.value() {
+                if let Some(cat) = category_filter {
+                    if ep.category.eq_ignore_ascii_case(cat) {
+                        results.push(ep.clone());
+                    }
+                } else {
+                    results.push(ep.clone());
+                }
+            }
+        }
+        results.sort_by(|a, b| a.file_path.cmp(&b.file_path).then(a.line.cmp(&b.line)));
+        results
+    }
+
+    pub fn get_all_file_symbols(&self) -> Vec<(String, Vec<Symbol>)> {
+        self.file_symbols
+            .iter()
+            .map(|e| (e.key().clone(), e.value().clone()))
+            .collect()
+    }
+
+    pub fn file_count(&self) -> usize {
+        self.file_symbols.len()
     }
 
     pub fn get_file_outline(&self, path: &str) -> Result<FileOutline, String> {
@@ -703,5 +840,129 @@ mod tests {
         assert!(!path_suffix_matches("src/fast_store.rs", "store.rs"));
         assert!(!path_suffix_matches("extra.rs", "a.rs"));
         assert!(path_suffix_matches("src/store.rs", "project/src/store.rs"));
+    }
+
+    #[test]
+    fn test_store_multi_index_extensions() {
+        let store = CodeStore::new(PathBuf::from("."));
+
+        let sym = Symbol {
+            name: "calculate".to_string(),
+            kind: SymbolKind::Method,
+            file_path: "src/calc.rs".to_string(),
+            start_line: 10,
+            end_line: 20,
+            signature: "fn calculate(&self)".to_string(),
+            doc: None,
+            container_name: Some("Calculator".to_string()),
+            callees: vec![],
+        };
+
+        let import = ImportItem {
+            source_path: "src/calc.rs".to_string(),
+            specifier: "std::sync::Arc".to_string(),
+            is_external: true,
+            line: 1,
+        };
+
+        let type_rel = TypeRelation {
+            name: "Calculator".to_string(),
+            supertypes: vec!["Compute".to_string()],
+            is_trait: false,
+            methods: vec!["calculate".to_string()],
+            file_path: "src/calc.rs".to_string(),
+        };
+
+        let entrypoint = Entrypoint {
+            name: "start_calc".to_string(),
+            category: "startup".to_string(),
+            file_path: "src/calc.rs".to_string(),
+            line: 50,
+            route_or_cmd: None,
+        };
+
+        let result = ParsedFileResult {
+            symbols: vec![sym],
+            callers: HashMap::new(),
+            imports: vec![import],
+            types: vec![type_rel],
+            entrypoints: vec![entrypoint],
+        };
+
+        store.update_file_result("src/calc.rs", result);
+
+        assert_eq!(store.file_count(), 1);
+        let imps = store.get_file_imports("src/calc.rs");
+        assert_eq!(imps.len(), 1);
+        assert_eq!(imps[0].specifier, "std::sync::Arc");
+
+        let types = store.get_type_relations("Calculator");
+        assert_eq!(types.len(), 1);
+        assert_eq!(types[0].supertypes, vec!["Compute"]);
+
+        let eps = store.get_all_entrypoints(Some("startup"));
+        assert_eq!(eps.len(), 1);
+        assert_eq!(eps[0].name, "start_calc");
+
+        // Clear store
+        store.clear();
+        assert_eq!(store.file_count(), 0);
+        assert!(store.get_file_imports("src/calc.rs").is_empty());
+        assert!(store.get_type_relations("Calculator").is_empty());
+    }
+
+    #[test]
+    fn test_remove_path_or_prefix() {
+        let store = CodeStore::new(PathBuf::from("."));
+
+        let sym_a = Symbol {
+            name: "fn_a".to_string(),
+            kind: SymbolKind::Function,
+            file_path: "src/module/a.rs".to_string(),
+            start_line: 1,
+            end_line: 5,
+            signature: "fn fn_a()".to_string(),
+            doc: None,
+            container_name: None,
+            callees: vec![],
+        };
+
+        let sym_b = Symbol {
+            name: "fn_b".to_string(),
+            kind: SymbolKind::Function,
+            file_path: "src/module/b.rs".to_string(),
+            start_line: 1,
+            end_line: 5,
+            signature: "fn fn_b()".to_string(),
+            doc: None,
+            container_name: None,
+            callees: vec![],
+        };
+
+        let sym_other = Symbol {
+            name: "fn_other".to_string(),
+            kind: SymbolKind::Function,
+            file_path: "src/other.rs".to_string(),
+            start_line: 1,
+            end_line: 5,
+            signature: "fn fn_other()".to_string(),
+            doc: None,
+            container_name: None,
+            callees: vec![],
+        };
+
+        store.update_file("src/module/a.rs", vec![sym_a]);
+        store.update_file("src/module/b.rs", vec![sym_b]);
+        store.update_file("src/other.rs", vec![sym_other]);
+
+        assert_eq!(store.file_count(), 3);
+
+        // Remove prefix "src/module"
+        store.remove_path_or_prefix("src/module");
+
+        assert_eq!(store.file_count(), 1);
+        assert!(store.find_definition("fn_a").is_empty());
+        assert!(store.find_definition("fn_b").is_empty());
+        assert_eq!(store.find_definition("fn_other").len(), 1);
     }
 }

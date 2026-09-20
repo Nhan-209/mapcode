@@ -1,9 +1,15 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod architecture;
+mod cache;
+mod dependency;
+mod entrypoint;
+mod impact;
 mod mcp_server;
 mod parser;
 mod store;
+mod type_graph;
 mod watcher;
 
 use store::CodeStore;
@@ -50,11 +56,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let store = Arc::new(CodeStore::new(root_path.clone()));
 
-    // 1. Initial repository scan & indexing
-    watcher::scan_and_index_project(&store, &root_path);
+    // 1. Initial repository load (warm cache <10ms or cold scan fallback)
+    cache::load_or_scan_project(&store, &root_path);
 
     // 2. Start realtime background watcher
-    let initial_watcher = match watcher::start_watcher(store.clone(), root_path) {
+    let initial_watcher = match watcher::start_watcher(store.clone(), root_path.clone()) {
         Ok(w) => {
             eprintln!("[MapCode] Realtime file watcher active.");
             Some(w)

@@ -51,6 +51,11 @@ Thêm cấu hình siêu đơn giản (Zero-Config — không cần chỉ định
 | `get_call_graph` | `name: string`, `file_path?: string`, `container?: string`, `workspace_path?: string` | **Độ chính xác cao**: Trả về đồ thị cuộc gọi: ai gọi hàm này (**callers** kèm dòng code) và hàm này gọi những hàm nào (**callees** + **callee_details** chứa danh sách định nghĩa ứng viên). |
 | `fuzzy_search_symbols`| `query: string`, `kind?: string`, `limit?: int`, `workspace_path?: string` | Tìm kiếm mờ symbol theo tên hoặc lọc theo loại (`function`, `struct`, `class`,...). |
 | `get_project_stats` | `workspace_path?: string` | Báo cáo tổng quan số lượng file, số symbol, phân bổ theo ngôn ngữ trong dự án (Rust, Python, TypeScript, JavaScript, Lua, Go, C, C++). |
+| `get_dependencies` | `path: string`, `workspace_path?: string` | **Dependency Graph**: Phân tích quan hệ phụ thuộc xuôi/ngược của file (`imports`, `external_imports`, `imported_by`) và phát hiện chu kỳ lặp import (`circular_dependencies`). |
+| `get_type_graph` | `name: string`, `workspace_path?: string` | **Type Graph**: Truy xuất phân tầng kiểu 2 chiều (`supertypes`, `subtypes`), trait/interface implementations, struct embedding và danh sách method liên kết. |
+| `get_entrypoints` | `category?: string`, `workspace_path?: string` | **Entrypoint Detection**: Quét toàn bộ điểm vào: `startup` (main), `http` (API routes), `cli` (commands), `worker` (listeners & task handlers). |
+| `get_architecture_map`| `max_depth?: int`, `workspace_path?: string` | **Architecture Map**: Bản đồ topo cấu trúc phân tầng kiến trúc (`api`, `service`, `model`, `utility`) kèm chỉ số coupling ($C_a$, $C_e$, Instability $I$). |
+| `get_impact_analysis` | `target: string`, `max_depth?: int`, `workspace_path?: string` | **Impact Analysis (Blast Radius)**: Phân tích "đổi X thì những gì bị ảnh hưởng?": truy vết ngược chuỗi callers gián tiếp đến tận API/Entrypoints, tính toán điểm rủi ro. |
 
 ---
 

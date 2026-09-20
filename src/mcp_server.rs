@@ -4,7 +4,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+use crate::architecture::get_architecture_tree;
+use crate::dependency::get_file_dependencies;
+use crate::entrypoint::get_categorized_entrypoints;
+use crate::impact::compute_impact;
 use crate::store::CodeStore;
+use crate::type_graph::get_type_hierarchy;
 use crate::watcher::{strip_unc_prefix, WatcherHandle};
 
 #[derive(Debug, Deserialize)]
@@ -226,6 +231,99 @@ pub fn get_tools_list() -> Value {
                         "description": "Optional workspace root directory to switch to before querying"
                     }
                 }
+            }
+        },
+        {
+            "name": "get_dependencies",
+            "description": "Get forward and reverse import dependencies for a file, plus circular dependency cycle detection.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path to the file within the project (e.g. 'src/main.rs')"
+                    },
+                    "workspace_path": {
+                        "type": "string",
+                        "description": "Optional workspace root directory to switch to before querying"
+                    }
+                },
+                "required": ["path"]
+            }
+        },
+        {
+            "name": "get_type_graph",
+            "description": "Get bidirectional type hierarchy for a class/struct/interface/trait: supertypes, subtypes, trait implementations, and associated methods.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the class, struct, trait, or interface to inspect"
+                    },
+                    "workspace_path": {
+                        "type": "string",
+                        "description": "Optional workspace root directory to switch to before querying"
+                    }
+                },
+                "required": ["name"]
+            }
+        },
+        {
+            "name": "get_entrypoints",
+            "description": "List all detected system entrypoints (application main startup, HTTP API routes, CLI command handlers, background workers, event listeners).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "description": "Optional category filter: startup, http, cli, worker",
+                        "enum": ["startup", "http", "cli", "worker"]
+                    },
+                    "workspace_path": {
+                        "type": "string",
+                        "description": "Optional workspace root directory to switch to before querying"
+                    }
+                }
+            }
+        },
+        {
+            "name": "get_architecture_map",
+            "description": "Get a topographical hierarchical module tree with architectural layer classification (API, service, model, utility) and coupling metrics (Ca, Ce, Instability).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "max_depth": {
+                        "type": "integer",
+                        "description": "Maximum tree depth to explore (default 3)"
+                    },
+                    "workspace_path": {
+                        "type": "string",
+                        "description": "Optional workspace root directory to switch to before querying"
+                    }
+                }
+            }
+        },
+        {
+            "name": "get_impact_analysis",
+            "description": "Compute comprehensive blast-radius impact analysis when modifying a function, type, or file: upstream transitive callers, affected files, reachable entrypoints/APIs, and risk score.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Name of the function, type, or file path to analyze blast radius for"
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "description": "Maximum traversal depth for upstream call chains (default 3)"
+                    },
+                    "workspace_path": {
+                        "type": "string",
+                        "description": "Optional workspace root directory to switch to before querying"
+                    }
+                },
+                "required": ["target"]
             }
         }
     ])
@@ -475,6 +573,51 @@ async fn handle_tool_call(
             let stats = store.get_project_stats();
             serde_json::to_string_pretty(&stats).map_err(|e| e.to_string())
         }
+        "get_dependencies" => {
+            let path = arguments
+                .get("path")
+                .and_then(|p| p.as_str())
+                .ok_or_else(|| "Missing required argument 'path'".to_string())?;
+            let report = get_file_dependencies(store, path.trim());
+            serde_json::to_string_pretty(&report).map_err(|e| e.to_string())
+        }
+        "get_type_graph" => {
+            let name = arguments
+                .get("name")
+                .and_then(|n| n.as_str())
+                .ok_or_else(|| "Missing required argument 'name'".to_string())?;
+            match get_type_hierarchy(store, name.trim()) {
+                Some(report) => serde_json::to_string_pretty(&report).map_err(|e| e.to_string()),
+                None => Err(format!("Type '{}' not found in indexed codebase.", name)),
+            }
+        }
+        "get_entrypoints" => {
+            let category = arguments.get("category").and_then(|c| c.as_str());
+            let entrypoints = get_categorized_entrypoints(store, category);
+            serde_json::to_string_pretty(&entrypoints).map_err(|e| e.to_string())
+        }
+        "get_architecture_map" => {
+            let max_depth = arguments
+                .get("max_depth")
+                .and_then(|d| d.as_u64().or_else(|| d.as_str().and_then(|s| s.parse::<u64>().ok())))
+                .map(|d| d as usize)
+                .unwrap_or(3);
+            let tree = get_architecture_tree(store, max_depth);
+            serde_json::to_string_pretty(&tree).map_err(|e| e.to_string())
+        }
+        "get_impact_analysis" => {
+            let target = arguments
+                .get("target")
+                .and_then(|t| t.as_str())
+                .ok_or_else(|| "Missing required argument 'target'".to_string())?;
+            let max_depth = arguments
+                .get("max_depth")
+                .and_then(|d| d.as_u64().or_else(|| d.as_str().and_then(|s| s.parse::<u64>().ok())))
+                .map(|d| d as usize)
+                .unwrap_or(3);
+            let impact = compute_impact(store, target.trim(), max_depth);
+            serde_json::to_string_pretty(&impact).map_err(|e| e.to_string())
+        }
         _ => Err(format!("Unknown tool: '{}'", tool_name)),
     }
 }
@@ -517,13 +660,18 @@ mod tests {
         let resp = handle_request(&req, &store, &watcher).await;
         let result = resp.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 6);
+        assert_eq!(tools.len(), 11);
         assert!(tools.iter().any(|t| t["name"] == "set_workspace"));
         assert!(tools.iter().any(|t| t["name"] == "get_file_outline"));
         assert!(tools.iter().any(|t| t["name"] == "find_definition"));
         assert!(tools.iter().any(|t| t["name"] == "get_call_graph"));
         assert!(tools.iter().any(|t| t["name"] == "fuzzy_search_symbols"));
         assert!(tools.iter().any(|t| t["name"] == "get_project_stats"));
+        assert!(tools.iter().any(|t| t["name"] == "get_dependencies"));
+        assert!(tools.iter().any(|t| t["name"] == "get_type_graph"));
+        assert!(tools.iter().any(|t| t["name"] == "get_entrypoints"));
+        assert!(tools.iter().any(|t| t["name"] == "get_architecture_map"));
+        assert!(tools.iter().any(|t| t["name"] == "get_impact_analysis"));
     }
 
     #[tokio::test]

@@ -20,3 +20,8 @@ Thumbs.db
 # Logs and temporary files
 *.log
 *.tmp
+
+# MapCode cache and agent metadata
+.mapcode/
+.agents/
+ORIGINAL_REQUEST.md

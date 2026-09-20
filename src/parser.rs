@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use serde::{Deserialize, Serialize};
 use tree_sitter::{Node, Parser};
@@ -30,6 +31,72 @@ pub struct Symbol {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container_name: Option<String>,
     pub callees: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SymbolRef {
+    pub name: String,
+    pub kind: SymbolKind,
+    pub file_path: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub signature: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container_name: Option<String>,
+}
+
+impl From<&Symbol> for SymbolRef {
+    fn from(sym: &Symbol) -> Self {
+        Self {
+            name: sym.name.clone(),
+            kind: sym.kind,
+            file_path: sym.file_path.clone(),
+            start_line: sym.start_line,
+            end_line: sym.end_line,
+            signature: sym.signature.clone(),
+            container_name: sym.container_name.clone(),
+        }
+    }
+}
+
+/// Represents an import statement extracted from source code.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ImportItem {
+    pub source_path: String,
+    pub specifier: String,
+    pub is_external: bool,
+    pub line: usize,
+}
+
+/// Represents a type definition, its hierarchy, and associated methods.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeRelation {
+    pub name: String,
+    pub supertypes: Vec<String>,
+    pub is_trait: bool,
+    pub methods: Vec<String>,
+    pub file_path: String,
+}
+
+/// Represents an execution or request entrypoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Entrypoint {
+    pub name: String,
+    pub category: String, // "startup", "http", "cli", "worker"
+    pub file_path: String,
+    pub line: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_or_cmd: Option<String>,
+}
+
+/// Aggregated multi-dimensional AST extraction result for a single source file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParsedFileResult {
+    pub symbols: Vec<Symbol>,
+    pub callers: HashMap<String, HashSet<SymbolRef>>,
+    pub imports: Vec<ImportItem>,
+    pub types: Vec<TypeRelation>,
+    pub entrypoints: Vec<Entrypoint>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,12 +145,7 @@ impl SupportedLanguage {
     }
 }
 
-pub fn parse_file(
-    file_path: &str,
-    content: &str,
-    lang: SupportedLanguage,
-) -> Result<Vec<Symbol>, String> {
-    let mut parser = Parser::new();
+pub fn set_parser_language(parser: &mut Parser, lang: SupportedLanguage) -> Result<(), String> {
     match lang {
         SupportedLanguage::Rust => {
             parser
@@ -131,15 +193,33 @@ pub fn parse_file(
                 .map_err(|e| format!("Failed to set C++ language: {:?}", e))?;
         }
     }
+    Ok(())
+}
+
+/// Comprehensive file parser returning symbols, callers, imports, types, and entrypoints.
+pub fn parse_file_result(
+    file_path: &str,
+    content: &str,
+    lang: SupportedLanguage,
+) -> Result<ParsedFileResult, String> {
+    let mut parser = Parser::new();
+    set_parser_language(&mut parser, lang)?;
 
     let tree = parser
         .parse(content, None)
         .ok_or_else(|| "Failed to parse content with tree-sitter".to_string())?;
 
-    let mut symbols = Vec::new();
+    let root = tree.root_node();
     let source_bytes = content.as_bytes();
+
+    let mut symbols = Vec::new();
+    let mut imports = Vec::new();
+    let mut types = Vec::new();
+    let mut entrypoints = Vec::new();
+
+    // 1. Extract symbols & callees
     extract_symbols(
-        tree.root_node(),
+        root,
         source_bytes,
         content,
         file_path,
@@ -148,7 +228,65 @@ pub fn parse_file(
         &mut symbols,
     );
 
-    Ok(symbols)
+    // 2. Extract import statements
+    extract_imports(
+        root,
+        source_bytes,
+        file_path,
+        lang,
+        &mut imports,
+    );
+
+    // 3. Extract type relations & hierarchies
+    extract_types(
+        root,
+        source_bytes,
+        file_path,
+        lang,
+        &mut types,
+    );
+
+    // 4. Extract entrypoints (startup, HTTP, CLI, worker)
+    extract_entrypoints(
+        root,
+        source_bytes,
+        content,
+        file_path,
+        lang,
+        &mut entrypoints,
+    );
+
+    // 5. Correlate associated methods with types
+    correlate_type_methods(&symbols, &mut types);
+
+    // 6. Build callers map for symbols in this file
+    let mut callers: HashMap<String, HashSet<SymbolRef>> = HashMap::new();
+    for sym in &symbols {
+        let sym_ref = SymbolRef::from(sym);
+        for callee in &sym.callees {
+            callers
+                .entry(callee.clone())
+                .or_default()
+                .insert(sym_ref.clone());
+        }
+    }
+
+    Ok(ParsedFileResult {
+        symbols,
+        callers,
+        imports,
+        types,
+        entrypoints,
+    })
+}
+
+/// Backward-compatible wrapper delegating to parse_file_result.
+pub fn parse_file(
+    file_path: &str,
+    content: &str,
+    lang: SupportedLanguage,
+) -> Result<Vec<Symbol>, String> {
+    parse_file_result(file_path, content, lang).map(|r| r.symbols)
 }
 
 fn extract_symbols(
@@ -1814,6 +1952,970 @@ fn is_ignored_builtin(name: &str) -> bool {
     )
 }
 
+pub fn is_external_import(specifier: &str, lang: SupportedLanguage) -> bool {
+    let s = specifier.trim();
+    if s.is_empty() {
+        return false;
+    }
+    match lang {
+        SupportedLanguage::Rust => {
+            !(s.starts_with("crate") || s.starts_with("super") || s.starts_with("self"))
+        }
+        SupportedLanguage::Python => {
+            !s.starts_with('.')
+        }
+        SupportedLanguage::JavaScript
+        | SupportedLanguage::TypeScript
+        | SupportedLanguage::Tsx => {
+            !(s.starts_with("./") || s.starts_with("../") || s.starts_with('/'))
+        }
+        SupportedLanguage::Go => {
+            !(s.starts_with("./") || s.starts_with("../"))
+        }
+        SupportedLanguage::C | SupportedLanguage::Cpp => {
+            !s.starts_with('"')
+        }
+        SupportedLanguage::Lua => {
+            if s.starts_with("./") || s.starts_with("../") {
+                false
+            } else {
+                matches!(
+                    s,
+                    "math" | "string" | "table" | "io" | "os" | "coroutine"
+                        | "package" | "debug" | "cjson" | "socket" | "lfs"
+                )
+            }
+        }
+    }
+}
+
+fn extract_imports(
+    node: Node,
+    source: &[u8],
+    file_path: &str,
+    lang: SupportedLanguage,
+    imports: &mut Vec<ImportItem>,
+) {
+    let kind = node.kind();
+    match lang {
+        SupportedLanguage::Rust => {
+            if kind == "use_declaration" {
+                let line = node.start_position().row + 1;
+                let raw_text = node_text(node, source).trim();
+                let clean_text = raw_text
+                    .strip_prefix("pub ")
+                    .unwrap_or(raw_text)
+                    .strip_prefix("use ")
+                    .unwrap_or(raw_text)
+                    .trim_end_matches(';')
+                    .trim();
+
+                if let Some((prefix, sub_list)) = clean_text.split_once("::{") {
+                    let sub_items = sub_list.trim_end_matches('}');
+                    for item in sub_items.split(',') {
+                        let item_clean = item.trim();
+                        if !item_clean.is_empty() {
+                            let spec = format!("{}::{}", prefix.trim(), item_clean);
+                            let is_external = is_external_import(&spec, lang);
+                            imports.push(ImportItem {
+                                source_path: file_path.to_string(),
+                                specifier: spec,
+                                is_external,
+                                line,
+                            });
+                        }
+                    }
+                } else {
+                    let spec = if let Some((base, _)) = clean_text.split_once(" as ") {
+                        base.trim().to_string()
+                    } else {
+                        clean_text.to_string()
+                    };
+                    if !spec.is_empty() {
+                        let is_external = is_external_import(&spec, lang);
+                        imports.push(ImportItem {
+                            source_path: file_path.to_string(),
+                            specifier: spec,
+                            is_external,
+                            line,
+                        });
+                    }
+                }
+            }
+        }
+        SupportedLanguage::Python => {
+            if kind == "import_statement" {
+                let line = node.start_position().row + 1;
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i) {
+                        if child.kind() == "dotted_name" {
+                            let spec = node_text(child, source).trim().to_string();
+                            if !spec.is_empty() {
+                                let is_external = is_external_import(&spec, lang);
+                                imports.push(ImportItem {
+                                    source_path: file_path.to_string(),
+                                    specifier: spec,
+                                    is_external,
+                                    line,
+                                });
+                            }
+                        } else if child.kind() == "aliased_import" {
+                            if let Some(name_child) = child.child_by_field_name("name") {
+                                let spec = node_text(name_child, source).trim().to_string();
+                                if !spec.is_empty() {
+                                    let is_external = is_external_import(&spec, lang);
+                                    imports.push(ImportItem {
+                                        source_path: file_path.to_string(),
+                                        specifier: spec,
+                                        is_external,
+                                        line,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if kind == "import_from_statement" {
+                let line = node.start_position().row + 1;
+                if let Some(module_name) = node.child_by_field_name("module_name") {
+                    let spec = node_text(module_name, source).trim().to_string();
+                    if !spec.is_empty() {
+                        let is_external = is_external_import(&spec, lang);
+                        imports.push(ImportItem {
+                            source_path: file_path.to_string(),
+                            specifier: spec,
+                            is_external,
+                            line,
+                        });
+                    }
+                } else {
+                    let raw = node_text(node, source).trim();
+                    if let Some(rest) = raw.strip_prefix("from ") {
+                        if let Some((mod_part, _)) = rest.split_once(" import") {
+                            let spec = mod_part.trim().to_string();
+                            if !spec.is_empty() {
+                                let is_external = is_external_import(&spec, lang);
+                                imports.push(ImportItem {
+                                    source_path: file_path.to_string(),
+                                    specifier: spec,
+                                    is_external,
+                                    line,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        SupportedLanguage::JavaScript
+        | SupportedLanguage::TypeScript
+        | SupportedLanguage::Tsx => {
+            if kind == "import_statement" {
+                let line = node.start_position().row + 1;
+                if let Some(source_node) = node.child_by_field_name("source") {
+                    let raw = node_text(source_node, source).trim();
+                    let spec = raw.trim_matches(['\'', '"']).to_string();
+                    if !spec.is_empty() {
+                        let is_external = is_external_import(&spec, lang);
+                        imports.push(ImportItem {
+                            source_path: file_path.to_string(),
+                            specifier: spec,
+                            is_external,
+                            line,
+                        });
+                    }
+                }
+            } else if kind == "export_statement" {
+                let line = node.start_position().row + 1;
+                if let Some(source_node) = node.child_by_field_name("source") {
+                    let raw = node_text(source_node, source).trim();
+                    let spec = raw.trim_matches(['\'', '"']).to_string();
+                    if !spec.is_empty() {
+                        let is_external = is_external_import(&spec, lang);
+                        imports.push(ImportItem {
+                            source_path: file_path.to_string(),
+                            specifier: spec,
+                            is_external,
+                            line,
+                        });
+                    }
+                }
+            } else if kind == "call_expression" {
+                if let Some(func) = node.child_by_field_name("function") {
+                    let fn_name = node_text(func, source).trim();
+                    if fn_name == "require" || fn_name == "import" {
+                        if let Some(args) = node.child_by_field_name("arguments") {
+                            for i in 0..args.child_count() {
+                                if let Some(arg) = args.child(i) {
+                                    if arg.kind() == "string" {
+                                        let line = node.start_position().row + 1;
+                                        let raw = node_text(arg, source).trim();
+                                        let spec = raw.trim_matches(['\'', '"']).to_string();
+                                        if !spec.is_empty() {
+                                            let is_external = is_external_import(&spec, lang);
+                                            imports.push(ImportItem {
+                                                source_path: file_path.to_string(),
+                                                specifier: spec,
+                                                is_external,
+                                                line,
+                                            });
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        SupportedLanguage::Go => {
+            if kind == "import_spec" {
+                let line = node.start_position().row + 1;
+                if let Some(path_node) = node.child_by_field_name("path") {
+                    let raw = node_text(path_node, source).trim();
+                    let spec = raw.trim_matches('"').to_string();
+                    if !spec.is_empty() {
+                        let is_external = is_external_import(&spec, lang);
+                        imports.push(ImportItem {
+                            source_path: file_path.to_string(),
+                            specifier: spec,
+                            is_external,
+                            line,
+                        });
+                    }
+                }
+            }
+        }
+        SupportedLanguage::C | SupportedLanguage::Cpp => {
+            if kind == "preproc_include" {
+                let line = node.start_position().row + 1;
+                if let Some(path_node) = node.child_by_field_name("path") {
+                    let raw = node_text(path_node, source).trim();
+                    let is_sys = raw.starts_with('<');
+                    let spec = raw.trim_matches(['<', '>', '"']).to_string();
+                    if !spec.is_empty() {
+                        imports.push(ImportItem {
+                            source_path: file_path.to_string(),
+                            specifier: spec,
+                            is_external: is_sys,
+                            line,
+                        });
+                    }
+                }
+            }
+        }
+        SupportedLanguage::Lua => {
+            if kind == "function_call" {
+                let text = node_text(node, source).trim();
+                if text.starts_with("require") {
+                    let line = node.start_position().row + 1;
+                    if let Some(prefix) = text.strip_prefix("require") {
+                        let trimmed = prefix.trim().trim_start_matches('(').trim_end_matches(')').trim();
+                        let spec = trimmed.trim_matches(['"', '\'']).to_string();
+                        if !spec.is_empty() {
+                            let is_external = is_external_import(&spec, lang);
+                            imports.push(ImportItem {
+                                source_path: file_path.to_string(),
+                                specifier: spec,
+                                is_external,
+                                line,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            extract_imports(child, source, file_path, lang, imports);
+        }
+    }
+}
+
+fn extract_types(
+    node: Node,
+    source: &[u8],
+    file_path: &str,
+    lang: SupportedLanguage,
+    types: &mut Vec<TypeRelation>,
+) {
+    let kind = node.kind();
+    match lang {
+        SupportedLanguage::Rust => {
+            if kind == "struct_item" || kind == "enum_item" {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = node_text(name_node, source).to_string();
+                    let mut supertypes = Vec::new();
+                    let raw = node_text(node, source);
+                    if let Some(derive_pos) = raw.find("#[derive(") {
+                        let after = &raw[derive_pos + 9..];
+                        if let Some(end_paren) = after.find(')') {
+                            let derive_list = &after[..end_paren];
+                            for d in derive_list.split(',') {
+                                let d_clean = d.trim().to_string();
+                                if !d_clean.is_empty() {
+                                    supertypes.push(d_clean);
+                                }
+                            }
+                        }
+                    }
+                    types.push(TypeRelation {
+                        name,
+                        supertypes,
+                        is_trait: false,
+                        methods: Vec::new(),
+                        file_path: file_path.to_string(),
+                    });
+                }
+            } else if kind == "trait_item" {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = node_text(name_node, source).to_string();
+                    let mut supertypes = Vec::new();
+                    if let Some(bounds) = node.child_by_field_name("bounds") {
+                        let text = node_text(bounds, source);
+                        for b in text.split('+') {
+                            let b_clean = b.trim().trim_start_matches(':').trim().to_string();
+                            if !b_clean.is_empty() {
+                                supertypes.push(b_clean);
+                            }
+                        }
+                    }
+                    let mut methods = Vec::new();
+                    if let Some(body) = node.child_by_field_name("body") {
+                        for i in 0..body.child_count() {
+                            if let Some(child) = body.child(i) {
+                                if child.kind() == "function_item" || child.kind() == "function_signature_item" {
+                                    if let Some(fn_name) = child.child_by_field_name("name") {
+                                        methods.push(node_text(fn_name, source).to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    types.push(TypeRelation {
+                        name,
+                        supertypes,
+                        is_trait: true,
+                        methods,
+                        file_path: file_path.to_string(),
+                    });
+                }
+            } else if kind == "impl_item" {
+                let target_type = node.child_by_field_name("type").map(|n| node_text(n, source).to_string());
+                let trait_opt = node.child_by_field_name("trait").map(|n| node_text(n, source).to_string());
+                if let Some(struct_name) = target_type {
+                    let mut methods = Vec::new();
+                    if let Some(body) = node.child_by_field_name("body") {
+                        for i in 0..body.child_count() {
+                            if let Some(child) = body.child(i) {
+                                if child.kind() == "function_item" {
+                                    if let Some(fn_name) = child.child_by_field_name("name") {
+                                        methods.push(node_text(fn_name, source).to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let supertypes = if let Some(tr) = trait_opt {
+                        vec![tr]
+                    } else {
+                        Vec::new()
+                    };
+                    types.push(TypeRelation {
+                        name: struct_name,
+                        supertypes,
+                        is_trait: false,
+                        methods,
+                        file_path: file_path.to_string(),
+                    });
+                }
+            }
+        }
+        SupportedLanguage::Python => {
+            if kind == "class_definition" {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = node_text(name_node, source).to_string();
+                    let mut supertypes = Vec::new();
+                    if let Some(superclasses) = node.child_by_field_name("superclasses") {
+                        for i in 0..superclasses.child_count() {
+                            if let Some(child) = superclasses.child(i) {
+                                let ck = child.kind();
+                                if ck == "identifier" || ck == "attribute" {
+                                    let super_name = node_text(child, source).trim().to_string();
+                                    if !super_name.is_empty() {
+                                        supertypes.push(super_name);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let is_trait = supertypes.iter().any(|s| {
+                        s == "ABC" || s == "abc.ABC" || s == "Protocol" || s == "typing.Protocol"
+                    });
+                    let mut methods = Vec::new();
+                    if let Some(body) = node.child_by_field_name("body") {
+                        for i in 0..body.child_count() {
+                            if let Some(child) = body.child(i) {
+                                if child.kind() == "function_definition" {
+                                    if let Some(fn_name) = child.child_by_field_name("name") {
+                                        methods.push(node_text(fn_name, source).to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    types.push(TypeRelation {
+                        name,
+                        supertypes,
+                        is_trait,
+                        methods,
+                        file_path: file_path.to_string(),
+                    });
+                }
+            }
+        }
+        SupportedLanguage::JavaScript
+        | SupportedLanguage::TypeScript
+        | SupportedLanguage::Tsx => {
+            if kind == "class_declaration" {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = node_text(name_node, source).to_string();
+                    let mut supertypes = Vec::new();
+                    for i in 0..node.child_count() {
+                        if let Some(child) = node.child(i) {
+                            if child.kind() == "class_heritage" {
+                                for j in 0..child.child_count() {
+                                    if let Some(clause) = child.child(j) {
+                                        if clause.kind() == "extends_clause" || clause.kind() == "implements_clause" {
+                                            for k in 0..clause.child_count() {
+                                                if let Some(item) = clause.child(k) {
+                                                    if item.kind() == "identifier" || item.kind() == "type_identifier" {
+                                                        let sname = node_text(item, source).trim().to_string();
+                                                        if !sname.is_empty() {
+                                                            supertypes.push(sname);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let mut methods = Vec::new();
+                    if let Some(body) = node.child_by_field_name("body") {
+                        for i in 0..body.child_count() {
+                            if let Some(child) = body.child(i) {
+                                if child.kind() == "method_definition" {
+                                    if let Some(fn_name) = child.child_by_field_name("name") {
+                                        methods.push(node_text(fn_name, source).to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    types.push(TypeRelation {
+                        name,
+                        supertypes,
+                        is_trait: false,
+                        methods,
+                        file_path: file_path.to_string(),
+                    });
+                }
+            } else if kind == "interface_declaration" {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = node_text(name_node, source).to_string();
+                    let mut supertypes = Vec::new();
+                    for i in 0..node.child_count() {
+                        if let Some(child) = node.child(i) {
+                            if child.kind() == "extends_type_clause" || child.kind() == "extends_clause" {
+                                for j in 0..child.child_count() {
+                                    if let Some(item) = child.child(j) {
+                                        if item.kind() == "identifier" || item.kind() == "type_identifier" {
+                                            let sname = node_text(item, source).trim().to_string();
+                                            if !sname.is_empty() {
+                                                supertypes.push(sname);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let mut methods = Vec::new();
+                    if let Some(body) = node.child_by_field_name("body") {
+                        for i in 0..body.child_count() {
+                            if let Some(child) = body.child(i) {
+                                if child.kind() == "method_signature" || child.kind() == "property_signature" {
+                                    if let Some(fn_name) = child.child_by_field_name("name") {
+                                        methods.push(node_text(fn_name, source).to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    types.push(TypeRelation {
+                        name,
+                        supertypes,
+                        is_trait: true,
+                        methods,
+                        file_path: file_path.to_string(),
+                    });
+                }
+            }
+        }
+        SupportedLanguage::Go => {
+            if kind == "type_spec" {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = node_text(name_node, source).to_string();
+                    if let Some(type_node) = node.child_by_field_name("type") {
+                        if type_node.kind() == "struct_type" {
+                            let mut supertypes = Vec::new();
+                            if let Some(fields) = type_node.child_by_field_name("fields") {
+                                for i in 0..fields.child_count() {
+                                    if let Some(field) = fields.child(i) {
+                                        if field.kind() == "field_declaration" {
+                                            if field.child_by_field_name("name").is_none() {
+                                                if let Some(t) = field.child_by_field_name("type") {
+                                                    let embedded_name = node_text(t, source).trim().trim_start_matches('*').to_string();
+                                                    if !embedded_name.is_empty() {
+                                                        supertypes.push(embedded_name);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            types.push(TypeRelation {
+                                name,
+                                supertypes,
+                                is_trait: false,
+                                methods: Vec::new(),
+                                file_path: file_path.to_string(),
+                            });
+                        } else if type_node.kind() == "interface_type" {
+                            let mut supertypes = Vec::new();
+                            let mut methods = Vec::new();
+                            for i in 0..type_node.child_count() {
+                                if let Some(child) = type_node.child(i) {
+                                    if child.kind() == "type_identifier" {
+                                        let iname = node_text(child, source).trim().to_string();
+                                        if !iname.is_empty() {
+                                            supertypes.push(iname);
+                                        }
+                                    } else if child.kind() == "method_spec" || child.kind() == "method_elem" {
+                                        if let Some(m_name) = child.child_by_field_name("name") {
+                                            methods.push(node_text(m_name, source).to_string());
+                                        }
+                                    }
+                                }
+                            }
+                            types.push(TypeRelation {
+                                name,
+                                supertypes,
+                                is_trait: true,
+                                methods,
+                                file_path: file_path.to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        SupportedLanguage::C | SupportedLanguage::Cpp => {
+            if kind == "class_specifier" || kind == "struct_specifier" {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = node_text(name_node, source).to_string();
+                    let mut supertypes = Vec::new();
+                    for i in 0..node.child_count() {
+                        if let Some(child) = node.child(i) {
+                            if child.kind() == "base_class_clause" {
+                                for j in 0..child.child_count() {
+                                    if let Some(spec) = child.child(j) {
+                                        if spec.kind() == "base_specifier" {
+                                            let text = node_text(spec, source).trim();
+                                            let clean = text
+                                                .replace("public", "")
+                                                .replace("protected", "")
+                                                .replace("private", "")
+                                                .replace("virtual", "");
+                                            let s_clean = clean.trim().to_string();
+                                            if !s_clean.is_empty() {
+                                                supertypes.push(s_clean);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let mut methods = Vec::new();
+                    if let Some(body) = node.child_by_field_name("body") {
+                        for i in 0..body.child_count() {
+                            if let Some(child) = body.child(i) {
+                                if child.kind() == "function_definition" || child.kind() == "declaration" {
+                                    if let Some(decl) = child.child_by_field_name("declarator") {
+                                        let decl_text = node_text(decl, source);
+                                        let fn_name = decl_text.split('(').next().unwrap_or("").trim().to_string();
+                                        if !fn_name.is_empty() {
+                                            methods.push(fn_name);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    types.push(TypeRelation {
+                        name,
+                        supertypes,
+                        is_trait: false,
+                        methods,
+                        file_path: file_path.to_string(),
+                    });
+                }
+            }
+        }
+        SupportedLanguage::Lua => {
+            if kind == "variable_declaration" || kind == "assignment_statement" {
+                let text = node_text(node, source).trim();
+                if text.contains("= {}") || text.contains("={}") {
+                    let name = text.split('=').next().unwrap_or("").replace("local", "").trim().to_string();
+                    if !name.is_empty() && !name.contains('.') {
+                        types.push(TypeRelation {
+                            name,
+                            supertypes: Vec::new(),
+                            is_trait: false,
+                            methods: Vec::new(),
+                            file_path: file_path.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            extract_types(child, source, file_path, lang, types);
+        }
+    }
+}
+
+fn extract_entrypoints(
+    node: Node,
+    source: &[u8],
+    content: &str,
+    file_path: &str,
+    lang: SupportedLanguage,
+    entrypoints: &mut Vec<Entrypoint>,
+) {
+    let kind = node.kind();
+    let line = node.start_position().row + 1;
+
+    match lang {
+        SupportedLanguage::Rust => {
+            if kind == "function_item" {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = node_text(name_node, source).to_string();
+                    if name == "main" {
+                        entrypoints.push(Entrypoint {
+                            name: name.clone(),
+                            category: "startup".to_string(),
+                            file_path: file_path.to_string(),
+                            line,
+                            route_or_cmd: None,
+                        });
+                    }
+
+                    let lines: Vec<&str> = content.lines().collect();
+                    let start_row = node.start_position().row;
+                    for r in (start_row.saturating_sub(5)..start_row).rev() {
+                        let l = lines.get(r).map(|s| s.trim()).unwrap_or("");
+                        if l.starts_with("#[get(")
+                            || l.starts_with("#[post(")
+                            || l.starts_with("#[put(")
+                            || l.starts_with("#[delete(")
+                            || l.starts_with("#[route(")
+                        {
+                            let method = if l.starts_with("#[get") {
+                                "GET"
+                            } else if l.starts_with("#[post") {
+                                "POST"
+                            } else if l.starts_with("#[put") {
+                                "PUT"
+                            } else if l.starts_with("#[delete") {
+                                "DELETE"
+                            } else {
+                                "ROUTE"
+                            };
+                            let route_path = l.split('"').nth(1).unwrap_or("/");
+                            entrypoints.push(Entrypoint {
+                                name: name.clone(),
+                                category: "http".to_string(),
+                                file_path: file_path.to_string(),
+                                line,
+                                route_or_cmd: Some(format!("{} {}", method, route_path)),
+                            });
+                            break;
+                        }
+                    }
+
+                    if name.to_lowercase().contains("worker") || name.to_lowercase().contains("consumer") {
+                        entrypoints.push(Entrypoint {
+                            name: name.clone(),
+                            category: "worker".to_string(),
+                            file_path: file_path.to_string(),
+                            line,
+                            route_or_cmd: None,
+                        });
+                    }
+                }
+            }
+        }
+        SupportedLanguage::Python => {
+            if kind == "if_statement" {
+                let text = node_text(node, source);
+                if text.contains("__name__") && text.contains("__main__") {
+                    entrypoints.push(Entrypoint {
+                        name: "__main__".to_string(),
+                        category: "startup".to_string(),
+                        file_path: file_path.to_string(),
+                        line,
+                        route_or_cmd: Some("__main__".to_string()),
+                    });
+                }
+            } else if kind == "function_definition" {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = node_text(name_node, source).to_string();
+                    if name == "main" {
+                        entrypoints.push(Entrypoint {
+                            name: name.clone(),
+                            category: "startup".to_string(),
+                            file_path: file_path.to_string(),
+                            line,
+                            route_or_cmd: None,
+                        });
+                    }
+
+                    let lines: Vec<&str> = content.lines().collect();
+                    let start_row = node.start_position().row;
+                    for r in (start_row.saturating_sub(6)..start_row).rev() {
+                        let l = lines.get(r).map(|s| s.trim()).unwrap_or("");
+                        if l.starts_with('@') {
+                            if l.contains(".get(")
+                                || l.contains(".post(")
+                                || l.contains(".put(")
+                                || l.contains(".delete(")
+                                || l.contains(".route(")
+                            {
+                                let method = if l.contains(".get") {
+                                    "GET"
+                                } else if l.contains(".post") {
+                                    "POST"
+                                } else if l.contains(".put") {
+                                    "PUT"
+                                } else if l.contains(".delete") {
+                                    "DELETE"
+                                } else {
+                                    "ROUTE"
+                                };
+                                let route = l.split(['\'', '"']).nth(1).unwrap_or("/");
+                                entrypoints.push(Entrypoint {
+                                    name: name.clone(),
+                                    category: "http".to_string(),
+                                    file_path: file_path.to_string(),
+                                    line,
+                                    route_or_cmd: Some(format!("{} {}", method, route)),
+                                });
+                                break;
+                            } else if l.contains("click.command") || l.contains(".command(") {
+                                entrypoints.push(Entrypoint {
+                                    name: name.clone(),
+                                    category: "cli".to_string(),
+                                    file_path: file_path.to_string(),
+                                    line,
+                                    route_or_cmd: Some(name.clone()),
+                                });
+                                break;
+                            } else if l.contains(".task") || l.contains("shared_task") {
+                                entrypoints.push(Entrypoint {
+                                    name: name.clone(),
+                                    category: "worker".to_string(),
+                                    file_path: file_path.to_string(),
+                                    line,
+                                    route_or_cmd: None,
+                                });
+                                break;
+                            }
+                        } else if !l.is_empty() {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        SupportedLanguage::JavaScript
+        | SupportedLanguage::TypeScript
+        | SupportedLanguage::Tsx => {
+            if kind == "function_declaration" || kind == "method_definition" {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = node_text(name_node, source).to_string();
+                    if name == "main" || name == "bootstrap" || name == "startServer" {
+                        entrypoints.push(Entrypoint {
+                            name,
+                            category: "startup".to_string(),
+                            file_path: file_path.to_string(),
+                            line,
+                            route_or_cmd: None,
+                        });
+                    }
+                }
+            } else if kind == "call_expression" {
+                let text = node_text(node, source);
+                if text.starts_with("app.get(")
+                    || text.starts_with("app.post(")
+                    || text.starts_with("router.get(")
+                    || text.starts_with("router.post(")
+                    || text.starts_with("fastify.get(")
+                {
+                    let method = if text.contains(".get(") { "GET" } else { "POST" };
+                    let route = text.split(['\'', '"']).nth(1).unwrap_or("/");
+                    entrypoints.push(Entrypoint {
+                        name: format!("{}_{}", method.to_lowercase(), route.replace('/', "_")),
+                        category: "http".to_string(),
+                        file_path: file_path.to_string(),
+                        line,
+                        route_or_cmd: Some(format!("{} {}", method, route)),
+                    });
+                } else if text.starts_with("app.listen(") || text.starts_with("server.listen(") {
+                    entrypoints.push(Entrypoint {
+                        name: "listen".to_string(),
+                        category: "startup".to_string(),
+                        file_path: file_path.to_string(),
+                        line,
+                        route_or_cmd: None,
+                    });
+                } else if text.contains(".command(") {
+                    let cmd = text.split(['\'', '"']).nth(1).unwrap_or("command");
+                    entrypoints.push(Entrypoint {
+                        name: cmd.to_string(),
+                        category: "cli".to_string(),
+                        file_path: file_path.to_string(),
+                        line,
+                        route_or_cmd: Some(cmd.to_string()),
+                    });
+                }
+            }
+        }
+        SupportedLanguage::Go => {
+            if kind == "function_declaration" {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = node_text(name_node, source).to_string();
+                    if name == "main" || name == "init" {
+                        entrypoints.push(Entrypoint {
+                            name,
+                            category: "startup".to_string(),
+                            file_path: file_path.to_string(),
+                            line,
+                            route_or_cmd: None,
+                        });
+                    }
+                }
+            } else if kind == "call_expression" {
+                let text = node_text(node, source);
+                if text.contains(".GET(") || text.contains(".POST(") || text.contains(".HandleFunc(") {
+                    let method = if text.contains(".GET(") {
+                        "GET"
+                    } else if text.contains(".POST(") {
+                        "POST"
+                    } else {
+                        "HTTP"
+                    };
+                    let route = text.split('"').nth(1).unwrap_or("/");
+                    entrypoints.push(Entrypoint {
+                        name: format!("{}_{}", method.to_lowercase(), route.replace('/', "_")),
+                        category: "http".to_string(),
+                        file_path: file_path.to_string(),
+                        line,
+                        route_or_cmd: Some(format!("{} {}", method, route)),
+                    });
+                }
+            }
+        }
+        SupportedLanguage::C | SupportedLanguage::Cpp => {
+            if kind == "function_definition" {
+                if let Some(decl) = node.child_by_field_name("declarator") {
+                    let decl_text = node_text(decl, source);
+                    let name = decl_text.split('(').next().unwrap_or("").trim();
+                    if name == "main" {
+                        entrypoints.push(Entrypoint {
+                            name: "main".to_string(),
+                            category: "startup".to_string(),
+                            file_path: file_path.to_string(),
+                            line,
+                            route_or_cmd: None,
+                        });
+                    }
+                }
+            }
+        }
+        SupportedLanguage::Lua => {
+            if kind == "function_declaration" {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = node_text(name_node, source).to_string();
+                    if name == "main" {
+                        entrypoints.push(Entrypoint {
+                            name,
+                            category: "startup".to_string(),
+                            file_path: file_path.to_string(),
+                            line,
+                            route_or_cmd: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            extract_entrypoints(child, source, content, file_path, lang, entrypoints);
+        }
+    }
+}
+
+pub fn correlate_type_methods(symbols: &[Symbol], types: &mut [TypeRelation]) {
+    let mut methods_by_container: HashMap<String, Vec<String>> = HashMap::new();
+
+    for sym in symbols {
+        if sym.kind == SymbolKind::Method || sym.kind == SymbolKind::Function {
+            if let Some(container) = &sym.container_name {
+                methods_by_container
+                    .entry(container.clone())
+                    .or_default()
+                    .push(sym.name.clone());
+            }
+        }
+    }
+
+    for tr in types.iter_mut() {
+        if let Some(extra_methods) = methods_by_container.get(&tr.name) {
+            for m in extra_methods {
+                if !tr.methods.contains(m) {
+                    tr.methods.push(m.clone());
+                }
+            }
+        }
+        tr.methods.sort();
+        tr.methods.dedup();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2004,5 +3106,201 @@ int Calculator::multiply(int a, int b) {
         assert!(symbols.iter().any(|s| s.name == "calculate" && s.callees.contains(&"verify".to_string())));
         assert!(symbols.iter().any(|s| s.name == "multiply" && s.kind == SymbolKind::Method && s.container_name.as_deref() == Some("Calculator")));
         assert!(symbols.iter().any(|s| s.name == "multiply" && s.callees.contains(&"check_overflow".to_string())));
+    }
+
+    #[test]
+    fn test_rust_ast_extensions() {
+        let code = r#"
+use std::collections::HashMap;
+pub use crate::parser::Symbol;
+
+#[derive(Clone, Debug)]
+struct Point {
+    x: f64,
+    y: f64,
+}
+
+trait Formattable {
+    fn format(&self) -> String;
+}
+
+impl Formattable for Point {
+    fn format(&self) -> String {
+        format!("({}, {})", self.x, self.y)
+    }
+}
+
+#[get("/api/v1/ping")]
+pub fn ping() -> &'static str {
+    "pong"
+}
+
+fn main() {
+    let p = Point { x: 1.0, y: 2.0 };
+}
+"#;
+        let result = parse_file_result("src/main.rs", code, SupportedLanguage::Rust).unwrap();
+        assert_eq!(result.imports.len(), 2);
+        assert!(result.imports.iter().any(|i| i.specifier == "std::collections::HashMap" && i.is_external));
+        assert!(result.imports.iter().any(|i| i.specifier == "crate::parser::Symbol" && !i.is_external));
+
+        assert!(result.types.iter().any(|t| t.name == "Point" && t.supertypes.contains(&"Clone".to_string())));
+        assert!(result.types.iter().any(|t| t.name == "Point" && t.supertypes.contains(&"Formattable".to_string())));
+        assert!(result.types.iter().any(|t| t.name == "Formattable" && t.is_trait));
+
+        assert!(result.entrypoints.iter().any(|e| e.name == "main" && e.category == "startup"));
+        assert!(result.entrypoints.iter().any(|e| e.name == "ping" && e.category == "http" && e.route_or_cmd == Some("GET /api/v1/ping".to_string())));
+    }
+
+    #[test]
+    fn test_python_ast_extensions() {
+        let code = r#"
+import os
+from .utils import helper
+
+class BaseService:
+    def execute(self):
+        pass
+
+class UserService(BaseService):
+    def get_users(self):
+        return []
+
+@app.get("/users")
+def list_users():
+    return []
+
+if __name__ == '__main__':
+    print("running")
+"#;
+        let result = parse_file_result("app.py", code, SupportedLanguage::Python).unwrap();
+        assert!(result.imports.iter().any(|i| i.specifier == "os" && i.is_external));
+        assert!(result.imports.iter().any(|i| i.specifier == ".utils" && !i.is_external));
+
+        assert!(result.types.iter().any(|t| t.name == "UserService" && t.supertypes.contains(&"BaseService".to_string())));
+        assert!(result.entrypoints.iter().any(|e| e.name == "__main__" && e.category == "startup"));
+        assert!(result.entrypoints.iter().any(|e| e.name == "list_users" && e.category == "http" && e.route_or_cmd == Some("GET /users".to_string())));
+    }
+
+    #[test]
+    fn test_typescript_ast_extensions() {
+        let code = r#"
+import { helper } from './utils';
+import React from 'react';
+
+interface Animal {
+    makeSound(): void;
+}
+
+class Dog implements Animal {
+    makeSound(): void {
+        console.log("bark");
+    }
+}
+
+app.get("/health", (req, res) => {
+    res.send("ok");
+});
+
+function main() {
+    const d = new Dog();
+}
+"#;
+        let result = parse_file_result("index.ts", code, SupportedLanguage::TypeScript).unwrap();
+        assert!(result.imports.iter().any(|i| i.specifier == "./utils" && !i.is_external));
+        assert!(result.imports.iter().any(|i| i.specifier == "react" && i.is_external));
+
+        assert!(result.types.iter().any(|t| t.name == "Animal" && t.is_trait));
+        assert!(result.types.iter().any(|t| t.name == "Dog" && t.supertypes.contains(&"Animal".to_string())));
+        assert!(result.entrypoints.iter().any(|e| e.category == "http" && e.route_or_cmd == Some("GET /health".to_string())));
+        assert!(result.entrypoints.iter().any(|e| e.name == "main" && e.category == "startup"));
+    }
+
+    #[test]
+    fn test_go_ast_extensions() {
+        let code = r#"
+package main
+
+import (
+    "fmt"
+    "./local"
+)
+
+type Config struct {
+    Port int
+}
+
+type Server struct {
+    Config
+}
+
+func (s *Server) Start() {
+    fmt.Println("start")
+}
+
+func main() {
+    s := Server{}
+    s.Start()
+}
+"#;
+        let result = parse_file_result("main.go", code, SupportedLanguage::Go).unwrap();
+        assert!(result.imports.iter().any(|i| i.specifier == "fmt" && i.is_external));
+        assert!(result.imports.iter().any(|i| i.specifier == "./local" && !i.is_external));
+
+        assert!(result.types.iter().any(|t| t.name == "Server" && t.supertypes.contains(&"Config".to_string())));
+        assert!(result.types.iter().any(|t| t.name == "Server" && t.methods.contains(&"Start".to_string())));
+        assert!(result.entrypoints.iter().any(|e| e.name == "main" && e.category == "startup"));
+    }
+
+    #[test]
+    fn test_c_cpp_ast_extensions() {
+        let code = r#"
+#include <stdio.h>
+#include "myheader.h"
+
+class Base {
+public:
+    virtual void run() {}
+};
+
+class Derived : public Base {
+public:
+    void run() override {}
+};
+
+int main() {
+    return 0;
+}
+"#;
+        let result = parse_file_result("main.cpp", code, SupportedLanguage::Cpp).unwrap();
+        assert!(result.imports.iter().any(|i| i.specifier == "stdio.h" && i.is_external));
+        assert!(result.imports.iter().any(|i| i.specifier == "myheader.h" && !i.is_external));
+
+        assert!(result.types.iter().any(|t| t.name == "Derived" && t.supertypes.contains(&"Base".to_string())));
+        assert!(result.entrypoints.iter().any(|e| e.name == "main" && e.category == "startup"));
+    }
+
+    #[test]
+    fn test_lua_ast_extensions() {
+        let code = r#"
+local cjson = require("cjson")
+local utils = require("./utils")
+
+local Player = {}
+
+function Player:take_damage(amount)
+    self.hp = self.hp - amount
+end
+
+function main()
+    local p = Player
+end
+"#;
+        let result = parse_file_result("main.lua", code, SupportedLanguage::Lua).unwrap();
+        assert!(result.imports.iter().any(|i| i.specifier == "cjson" && i.is_external));
+        assert!(result.imports.iter().any(|i| i.specifier == "./utils" && !i.is_external));
+
+        assert!(result.types.iter().any(|t| t.name == "Player" && t.methods.contains(&"take_damage".to_string())));
+        assert!(result.entrypoints.iter().any(|e| e.name == "main" && e.category == "startup"));
     }
 }
