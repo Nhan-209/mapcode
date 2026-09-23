@@ -1,111 +1,63 @@
-# MapCode 🗺️⚡
+# MapCode
 
-> **Blazing-fast in-memory code map MCP server for AI coding assistants (Claude, Cursor, Antigravity, Cline, Roo-Code).**
+In-memory code map MCP server for AI coding assistants. Parses codebase with Tree-sitter, indexes symbols and relationships in RAM, and caches persistently to `.mapcode/cache.json`.
 
-MapCode parses and indexes your codebase in RAM using **Tree-sitter**, maintaining a realtime bidirectional Call Graph and symbol index. Instead of forcing AI assistants to repeatedly search through dozens of files or grep blindly, MapCode gives AI instant access to:
-- 📌 File outlines with exact line ranges and function signatures.
-- 🔍 Symbol definitions across the entire workspace.
-- 🕸️ Bidirectional call graphs (**who calls this function** and **what functions does it call**).
-- ⚡ Fuzzy symbol search with intelligent ranking.
-- 📊 Project-level code metrics and language statistics.
+## Supported Languages
 
+- Rust (.rs)
+- Python (.py)
+- TypeScript / JavaScript (.ts, .tsx, .js, .jsx)
+- Lua (.lua)
+- Go (.go)
+- C / C++ (.c, .cpp, .cc, .h, .hpp)
 
-## 📦 Cài đặt & Cấu hình MCP Client
+## Installation
 
-### Bước 1: Tải binary từ GitHub Releases
-Tải file nén tương ứng với hệ điều hành của bạn từ mục **Releases**:
-- **Windows (x64)**: `mapcode-windows-x64.zip` (giải nén lấy `mapcode.exe`)
-- **Linux (x64)**: `mapcode-linux-x64.tar.gz`
+Download the binary for your platform from GitHub Releases:
+- Windows: mapcode-windows-x64.zip (extract mapcode.exe)
+- Linux: mapcode-linux-x64.tar.gz (extract mapcode)
 
-Lưu file binary vào một thư mục tiện lợi, ví dụ: `C:\tools\mapcode.exe` (Windows) hoặc `/usr/local/bin/mapcode` (Linux).
+Place the binary in your PATH or an accessible directory.
 
----
+## MCP Client Configuration
 
-### Bước 2: Cấu hình vào AI Assistant
+Add to your MCP client config (Claude Desktop, Cursor, Antigravity, Cline, Roo-Code):
 
-#### 1. Claude Desktop / Cursor / Antigravity / Cline / Roo-Code
-Thêm cấu hình siêu đơn giản (Zero-Config — không cần chỉ định `args`):
 ```json
 {
   "mcpServers": {
     "mapcode": {
-      "command": "C:\\tools\\mapcode.exe"
+      "command": "path/to/mapcode.exe"
     }
   }
 }
 ```
-*(Nếu dùng macOS/Linux, thay `command` bằng đường dẫn tới binary `mapcode`).*
 
-> [!TIP]
-> **Tự động nhận diện Workspace**: Khi kết nối, MapCode tự động lấy thư mục workspace hiện tại của bạn từ MCP Client. Nếu muốn chuyển sang bất kỳ dự án nào khác, AI có thể tự động gọi tool `set_workspace(path)` mà bạn **không bao giờ cần phải mở file config để chỉnh sửa lại**.
+The workspace directory is detected automatically on initialization. You can switch to any other project at runtime using `set_workspace`.
 
----
+## Tools
 
-## 🛠️ Danh sách 6 Tools MCP Cung Cấp Cho AI
+| Tool | Parameters | Description |
+| --- | --- | --- |
+| set_workspace | path | Switch or re-index the active workspace directory at runtime. |
+| get_file_outline | path, workspace_path? | Symbols outline in a file (functions, classes, structs, signatures, line numbers). |
+| find_definition | name, file_path?, container?, workspace_path? | Find exact definition location of a symbol. |
+| get_call_graph | name, file_path?, container?, workspace_path? | Bidirectional call graph (callers with line numbers, callees with candidate definitions). |
+| fuzzy_search_symbols | query, kind?, limit?, workspace_path? | Fuzzy search symbols across codebase with Jaro-Winkler ranking. |
+| get_project_stats | workspace_path? | Total files, total symbols, functions, types, and language breakdown. |
+| get_dependencies | path, workspace_path? | Forward and reverse file dependencies (imports, external imports, imported_by, circular cycles). |
+| get_type_graph | name?, workspace_path? | Type inheritance hierarchy (supertypes, subtypes, traits/interfaces, struct embedding, associated methods). |
+| get_entrypoints | category?, workspace_path? | Detect entrypoints: startup (main), http (API routes), cli (commands), worker (background handlers). |
+| get_architecture_map | workspace_path? | Hierarchical module tree with inferred layer (api, service, model, utility) and Martin coupling metrics (Ca, Ce, Instability). |
+| get_impact_analysis | target, max_depth?, workspace_path? | Blast radius analysis: upstream caller chains, affected files, reachable entrypoints, risk score (0-100). |
 
-| Tên Tool | Tham số | Mô tả |
-| :--- | :--- | :--- |
-| `set_workspace` | `path: string` | **Đa dụng mọi dự án**: Chuyển đổi hoặc re-index thư mục workspace tức thì trên RAM mà không cần restart server hay sửa config. |
-| `get_file_outline` | `path: string`, `workspace_path?: string` | Trích xuất toàn bộ cấu trúc file: các hàm, class, struct, trait, enum kèm số dòng, chữ ký (signature) và docstring. |
-| `find_definition` | `name: string`, `file_path?: string`, `container?: string`, `workspace_path?: string` | **Độ chính xác cao**: Tra cứu nơi định nghĩa của symbol. Hỗ trợ lọc theo `file_path` và `container` để phân biệt các hàm trùng tên giữa các file. |
-| `get_call_graph` | `name: string`, `file_path?: string`, `container?: string`, `workspace_path?: string` | **Độ chính xác cao**: Trả về đồ thị cuộc gọi: ai gọi hàm này (**callers** kèm dòng code) và hàm này gọi những hàm nào (**callees** + **callee_details** chứa danh sách định nghĩa ứng viên). |
-| `fuzzy_search_symbols`| `query: string`, `kind?: string`, `limit?: int`, `workspace_path?: string` | Tìm kiếm mờ symbol theo tên hoặc lọc theo loại (`function`, `struct`, `class`,...). |
-| `get_project_stats` | `workspace_path?: string` | Báo cáo tổng quan số lượng file, số symbol, phân bổ theo ngôn ngữ trong dự án (Rust, Python, TypeScript, JavaScript, Lua, Go, C, C++). |
-| `get_dependencies` | `path: string`, `workspace_path?: string` | **Dependency Graph**: Phân tích quan hệ phụ thuộc xuôi/ngược của file (`imports`, `external_imports`, `imported_by`) và phát hiện chu kỳ lặp import (`circular_dependencies`). |
-| `get_type_graph` | `name: string`, `workspace_path?: string` | **Type Graph**: Truy xuất phân tầng kiểu 2 chiều (`supertypes`, `subtypes`), trait/interface implementations, struct embedding và danh sách method liên kết. |
-| `get_entrypoints` | `category?: string`, `workspace_path?: string` | **Entrypoint Detection**: Quét toàn bộ điểm vào: `startup` (main), `http` (API routes), `cli` (commands), `worker` (listeners & task handlers). |
-| `get_architecture_map`| `max_depth?: int`, `workspace_path?: string` | **Architecture Map**: Bản đồ topo cấu trúc phân tầng kiến trúc (`api`, `service`, `model`, `utility`) kèm chỉ số coupling ($C_a$, $C_e$, Instability $I$). |
-| `get_impact_analysis` | `target: string`, `max_depth?: int`, `workspace_path?: string` | **Impact Analysis (Blast Radius)**: Phân tích "đổi X thì những gì bị ảnh hưởng?": truy vết ngược chuỗi callers gián tiếp đến tận API/Entrypoints, tính toán điểm rủi ro. |
+## How It Works
 
----
+- Indexing: Walks the project directory respecting .gitignore, parses syntax trees with Tree-sitter, indexes symbols in concurrent DashMaps.
+- Cache: Stores parsed metadata in .mapcode/cache.json using atomic file writes. Warm startup loads in ~35ms without re-parsing unchanged files.
+- File Watcher: Background watcher updates individual modified files incrementally and syncs cache with debouncing.
+- Communication: Standard JSON-RPC 2.0 over stdio. All logs are directed to stderr.
 
-## 🌐 Các Ngôn Ngữ Được Hỗ Trợ
+## License
 
-- 🦀 **Rust**: `.rs` (functions, methods, structs, enums, traits, impl blocks, macros)
-- 🐍 **Python**: `.py` (functions, methods, classes, docstrings `"""..."""`)
-- 📘 **TypeScript / TSX**: `.ts`, `.tsx` (functions, arrow functions, classes, interfaces, type aliases)
-- 💛 **JavaScript / JSX**: `.js`, `.jsx`, `.mjs`, `.cjs` (functions, classes, methods, arrow functions)
-- 🌙 **Lua**: `.lua` (functions, local functions, methods `obj:method`, tables/classes `Table.method`, docstrings `---`)
-- 🐹 **Go**: `.go` (functions, methods `(s *Receiver) Method`, structs, interfaces, type aliases, docstrings)
-- ⚡ **C / C++**: `.c`, `.cpp`, `.cc`, `.cxx`, `.h`, `.hpp`, `.hh`, `.hxx` (functions, classes, structs, methods, prototypes, namespaces)
-
----
-
-## ⚙️ Kiến Trúc Hệ Thống (Architecture)
-
-```
-                       +-----------------------------+
-                       |       AI Assistant          |
-                       |  (Claude / Cursor / Cline)  |
-                       +--------------+--------------+
-                                      | Stdio (JSON-RPC 2.0)
-                                      v
-                       +-----------------------------+
-                       |      src/mcp_server.rs      |
-                       |   (6 MCP Analysis Tools)    |
-                       +--------------+--------------+
-                                      |
-                                      v
-                       +-----------------------------+
-                       |        src/store.rs         |
-                       |     In-Memory Code Map      |
-                       |   DashMap Realtime Cache    |
-                       | - Definitions  - Outline    |
-                       | - Call Graph   - Fuzzy Search
-                       +-------+--------------+------+
-                               ^              ^
-                AST Parsing    |              | Incremental Updates
-                               |              |
-                    +----------+--+        +--+------------+
-                    | src/parser  |        | src/watcher   |
-                    | Tree-sitter |        | notify daemon |
-                    +-------------+        +---------------+
-```
-
-1. **Initial Walk (`ignore` crate)**: Quét toàn bộ repo khi khởi động, tôn trọng `.gitignore` và bỏ qua các thư mục rác (`target/`, `node_modules/`, `.git/`).
-2. **Incremental Realtime Watcher (`notify` crate)**: Theo dõi sự kiện thay đổi file trên hệ thống. Khi bạn lưu file, MapCode chỉ re-parse đúng file đó và cập nhật đồ thị liên kết trên RAM trong vài mili-giây mà không quét lại toàn bộ repo.
-3. **Pure Stdio JSON-RPC**: Mọi log thông tin được đẩy ra `stderr` (`eprintln!`), đảm bảo luồng `stdout` thuần khiết 100% cho giao thức MCP.
-
-## 📄 Bản Quyền (License)
-
-Dự án được phân phối dưới giấy phép [MIT License](LICENSE).
+MIT
