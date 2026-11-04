@@ -507,17 +507,27 @@ impl CodeStore {
 
                 if let Some(sym) = caller_sym {
                     let mut matched = false;
-                    for cs in &sym.calls {
-                        if cs.name == query_name {
-                            let resolved = crate::resolve::resolve_call_site(
-                                self,
-                                &sym.file_path,
-                                sym.container_name.as_deref(),
-                                cs,
-                            );
-                            if resolved.iter().any(|r| def_signatures.contains(&(r.target.file_path.clone(), r.target.start_line))) {
+                    if sym.calls.is_empty() {
+                        // Backward-compatibility fallback for tests with only `callees`
+                        if sym.callees.iter().any(|c| c == query_name) {
+                            let caller_fam = crate::resolve::language_family_from_path(&sym.file_path);
+                            if definitions.iter().any(|d| crate::resolve::language_family_from_path(&d.file_path) == caller_fam) {
                                 matched = true;
-                                break;
+                            }
+                        }
+                    } else {
+                        for cs in &sym.calls {
+                            if cs.name == query_name {
+                                let resolved = crate::resolve::resolve_call_site(
+                                    self,
+                                    &sym.file_path,
+                                    sym.container_name.as_deref(),
+                                    cs,
+                                );
+                                if resolved.iter().any(|r| def_signatures.contains(&(r.target.file_path.clone(), r.target.start_line))) {
+                                    matched = true;
+                                    break;
+                                }
                             }
                         }
                     }
