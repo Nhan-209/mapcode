@@ -483,13 +483,9 @@ impl CodeStore {
             definitions.retain(|d| path_suffix_matches(&d.file_path, ff));
         }
 
-        let mut raw_callers: Vec<SymbolRef> = self.callers.get(query_name)
+        let raw_callers: Vec<SymbolRef> = self.callers.get(query_name)
             .map(|c| c.value().iter().cloned().collect())
             .unwrap_or_default();
-
-        if let Some(ff) = file_filter {
-            raw_callers.retain(|c| path_suffix_matches(&c.file_path, ff));
-        }
 
         // Precision verification: filter raw callers via resolve_call_site
         // Only accept a caller if its call site actually resolves to one of the requested definitions

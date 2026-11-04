@@ -36,16 +36,18 @@ pub fn get_file_dependencies(store: &CodeStore, path: &str) -> DependencyReport 
     let mut external_imports = Vec::new();
 
     for item in raw_imports {
-        if item.is_external {
+        // First check if specifier resolves to an indexed project file
+        if let Some(resolved) = resolve_import_path_with_files(&all_files, &target_key, &item.specifier) {
+            if !internal_imports.contains(&resolved) {
+                internal_imports.push(resolved);
+            }
+        } else if item.is_external {
             if !external_imports.contains(&item.specifier) {
                 external_imports.push(item.specifier.clone());
             }
         } else {
-            // Attempt to resolve relative or module path to an indexed project file
-            let resolved = resolve_import_path_with_files(&all_files, &target_key, &item.specifier);
-            let display_name = resolved.unwrap_or(item.specifier);
-            if !internal_imports.contains(&display_name) {
-                internal_imports.push(display_name);
+            if !internal_imports.contains(&item.specifier) {
+                internal_imports.push(item.specifier.clone());
             }
         }
     }
@@ -59,14 +61,12 @@ pub fn get_file_dependencies(store: &CodeStore, path: &str) -> DependencyReport 
             continue;
         }
         for item in items {
-            if !item.is_external {
-                if let Some(res) = resolve_import_path_with_files(&all_files, other_file, &item.specifier) {
-                    if res == target_key || path_suffix_matches(&res, &target_key) {
-                        imported_by_set.insert(other_file.clone());
-                    }
-                } else if path_suffix_matches(&target_key, &item.specifier) {
+            if let Some(res) = resolve_import_path_with_files(&all_files, other_file, &item.specifier) {
+                if res == target_key || path_suffix_matches(&res, &target_key) {
                     imported_by_set.insert(other_file.clone());
                 }
+            } else if !item.is_external && path_suffix_matches(&target_key, &item.specifier) {
+                imported_by_set.insert(other_file.clone());
             }
         }
     }

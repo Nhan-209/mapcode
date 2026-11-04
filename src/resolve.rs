@@ -148,6 +148,24 @@ pub fn resolve_call_site(
                     }
                 }
 
+                // Check if candidate matches imported files or containers
+                if resolved.is_empty() {
+                    for d in &same_lang_defs {
+                        let matches_import = imported_specifiers.iter().any(|spec| {
+                            let norm_spec = spec.replace("::", "/");
+                            spec.contains(&d.name)
+                                || d.file_path.contains(&norm_spec)
+                                || d.container_name.as_deref().map(|c| spec.contains(c)).unwrap_or(false)
+                        });
+                        if matches_import {
+                            resolved.push(ResolvedCall {
+                                target: d.clone(),
+                                confidence: Confidence::Likely,
+                            });
+                        }
+                    }
+                }
+
                 // Or if only 1 matching method exists across the same language family
                 if resolved.is_empty() {
                     if same_lang_defs.len() == 1 {

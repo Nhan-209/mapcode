@@ -141,19 +141,23 @@ def evaluate_golden(client: McpClient, golden_file: str) -> Dict[str, Any]:
             if any(any(ib.endswith(exp) or exp.endswith(ib) for exp in exp_imported_by) for ib in imported_by):
                 dep_hits += 1
 
-    # 4. Byte Ratio on src/store.rs
+    # 4. Byte Ratio on src/store.rs (JSON vs concise text)
     store_path = os.path.join(REPO_ROOT, "src", "store.rs")
     source_bytes = os.path.getsize(store_path) if os.path.exists(store_path) else 1
-    outline_res = client.call_tool("get_file_outline", {"path": "src/store.rs"})
-    outline_str = json.dumps(outline_res) if isinstance(outline_res, (dict, list)) else str(outline_res)
-    outline_bytes = len(outline_str.encode("utf-8"))
-    byte_ratio = (outline_bytes / source_bytes) * 100.0
+    outline_json = client.call_tool("get_file_outline", {"path": "src/store.rs"})
+    outline_json_str = json.dumps(outline_json) if isinstance(outline_json, (dict, list)) else str(outline_json)
+    outline_json_bytes = len(outline_json_str.encode("utf-8"))
+
+    outline_text = client.call_tool("get_file_outline", {"path": "src/store.rs", "format": "text"})
+    outline_text_str = str(outline_text)
+    outline_text_bytes = len(outline_text_str.encode("utf-8"))
 
     return {
         "call_graph_accuracy": f"{cg_hits}/{cg_total} ({cg_hits / max(1, cg_total) * 100:.1f}%)",
         "cross_language_pollution": cross_pollution_count,
         "dependency_accuracy": f"{dep_hits}/{dep_total} ({dep_hits / max(1, dep_total) * 100:.1f}%)",
-        "outline_byte_ratio": f"{byte_ratio:.1f}% ({outline_bytes} / {source_bytes} bytes)",
+        "outline_json_byte_ratio": f"{(outline_json_bytes / source_bytes) * 100.0:.1f}% ({outline_json_bytes} / {source_bytes} bytes)",
+        "outline_text_byte_ratio": f"{(outline_text_bytes / source_bytes) * 100.0:.1f}% ({outline_text_bytes} / {source_bytes} bytes)",
     }
 
 
