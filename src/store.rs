@@ -4,7 +4,7 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 
 pub use crate::parser::{
-    parse_file, parse_file_result, CallSite, Entrypoint, ImportItem, ParsedFileResult,
+    parse_file_result, Entrypoint, ImportItem, ParsedFileResult,
     SupportedLanguage, Symbol, SymbolKind, SymbolRef, TypeRelation,
 };
 
@@ -778,11 +778,11 @@ impl CodeStore {
         let actual_end = (end_line + context_lines).min(lines.len());
 
         let mut out = String::new();
-        for idx in actual_start..actual_end {
+        for (idx, line) in lines.iter().enumerate().take(actual_end).skip(actual_start) {
             let line_num = idx + 1;
             let is_symbol_body = line_num >= start_line && line_num <= end_line;
             let marker = if is_symbol_body { " " } else { "~" };
-            out.push_str(&format!("{:>5}{} | {}\n", line_num, marker, lines[idx]));
+            out.push_str(&format!("{:>5}{} | {}\n", line_num, marker, line));
         }
         Ok(out)
     }
