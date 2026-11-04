@@ -1,0 +1,58 @@
+{
+  "call_graph": [
+    {
+      "callee_name": "new",
+      "callee_file": "tests/golden/rust_app/service.rs",
+      "expected_caller": "run_pipeline",
+      "caller_file": "tests/golden/rust_app/main.rs"
+    },
+    {
+      "callee_name": "process",
+      "callee_file": "tests/golden/rust_app/service.rs",
+      "expected_caller": "run_pipeline",
+      "caller_file": "tests/golden/rust_app/main.rs"
+    },
+    {
+      "callee_name": "close",
+      "callee_file": "tests/golden/rust_app/service.rs",
+      "expected_caller": "run_pipeline",
+      "caller_file": "tests/golden/rust_app/main.rs"
+    },
+    {
+      "callee_name": "run",
+      "callee_file": "tests/golden/py_app/worker.py",
+      "expected_caller": "execute",
+      "caller_file": "tests/golden/py_app/main.py"
+    },
+    {
+      "callee_name": "Close",
+      "callee_file": "tests/golden/go_app/server.go",
+      "expected_caller": "main",
+      "caller_file": "tests/golden/go_app/server.go"
+    }
+  ],
+  "disallowed_cross_language_calls": [
+    {
+      "symbol_a": "run",
+      "language_a": "Python",
+      "symbol_b": "run_pipeline",
+      "language_b": "Rust"
+    },
+    {
+      "symbol_a": "close",
+      "language_a": "Rust",
+      "symbol_b": "Close",
+      "language_b": "Go"
+    }
+  ],
+  "dependencies": [
+    {
+      "file": "tests/golden/rust_app/service.rs",
+      "imported_by": ["tests/golden/rust_app/main.rs"]
+    },
+    {
+      "file": "tests/golden/py_app/worker.py",
+      "imported_by": ["tests/golden/py_app/main.py"]
+    }
+  ]
+}

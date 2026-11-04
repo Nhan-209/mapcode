@@ -170,6 +170,7 @@ mod tests {
                         doc: None,
                         container_name: Some("Dog".to_string()),
                         callees: vec![],
+            calls: Vec::new(),
                     },
                 ],
                 callers: HashMap::new(),

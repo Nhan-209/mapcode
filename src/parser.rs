@@ -18,6 +18,14 @@ pub enum SymbolKind {
     Module,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CallSite {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qualifier: Option<String>,
+    pub line: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Symbol {
     pub name: String,
@@ -31,6 +39,8 @@ pub struct Symbol {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container_name: Option<String>,
     pub callees: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub calls: Vec<CallSite>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -312,8 +322,9 @@ fn extract_symbols(
                         let doc = extract_leading_doc(content, node.start_position().row, lang);
 
                         let mut callees = Vec::new();
+                        let mut calls = Vec::new();
                         if let Some(body) = node.child_by_field_name("body") {
-                            collect_callees(body, source, lang, &mut callees);
+                            collect_callees(body, source, lang, &mut calls, &mut callees);
                         }
                         callees.sort();
                         callees.dedup();
@@ -334,6 +345,7 @@ fn extract_symbols(
                             doc,
                             container_name: container_name.map(|s| s.to_string()),
                             callees,
+                            calls,
                         });
                     }
                     return;
@@ -356,6 +368,7 @@ fn extract_symbols(
                             doc,
                             container_name: None,
                             callees: Vec::new(),
+                            calls: Vec::new(),
                         });
                     }
                 }
@@ -377,6 +390,7 @@ fn extract_symbols(
                             doc,
                             container_name: None,
                             callees: Vec::new(),
+                            calls: Vec::new(),
                         });
                     }
                 }
@@ -398,6 +412,7 @@ fn extract_symbols(
                             doc,
                             container_name: None,
                             callees: Vec::new(),
+                            calls: Vec::new(),
                         });
 
                         // Recurse into trait declarations
@@ -433,6 +448,7 @@ fn extract_symbols(
                             doc,
                             container_name: None,
                             callees: Vec::new(),
+                            calls: Vec::new(),
                         });
                     }
                     return;
@@ -455,6 +471,7 @@ fn extract_symbols(
                             doc,
                             container_name: None,
                             callees: Vec::new(),
+                            calls: Vec::new(),
                         });
 
                         if let Some(body) = node.child_by_field_name("body") {
@@ -512,6 +529,7 @@ fn extract_symbols(
                             doc,
                             container_name: None,
                             callees: Vec::new(),
+                            calls: Vec::new(),
                         });
 
                         if let Some(body) = node.child_by_field_name("body") {
@@ -538,8 +556,9 @@ fn extract_symbols(
                             .or_else(|| extract_leading_doc(content, node.start_position().row, lang));
 
                         let mut callees = Vec::new();
+                        let mut calls = Vec::new();
                         if let Some(body) = node.child_by_field_name("body") {
-                            collect_callees(body, source, lang, &mut callees);
+                            collect_callees(body, source, lang, &mut calls, &mut callees);
                         }
                         callees.sort();
                         callees.dedup();
@@ -560,6 +579,7 @@ fn extract_symbols(
                             doc,
                             container_name: container_name.map(|s| s.to_string()),
                             callees,
+                            calls,
                         });
                     }
                     return;
@@ -587,6 +607,7 @@ fn extract_symbols(
                             doc,
                             container_name: None,
                             callees: Vec::new(),
+                            calls: Vec::new(),
                         });
 
                         if let Some(body) = node.child_by_field_name("body") {
@@ -621,6 +642,7 @@ fn extract_symbols(
                             doc,
                             container_name: None,
                             callees: Vec::new(),
+                            calls: Vec::new(),
                         });
 
                         if let Some(body) = node.child_by_field_name("body") {
@@ -660,6 +682,7 @@ fn extract_symbols(
                             doc,
                             container_name: container_name.map(|s| s.to_string()),
                             callees: Vec::new(),
+                            calls: Vec::new(),
                         });
                     }
                     return;
@@ -682,6 +705,7 @@ fn extract_symbols(
                             doc,
                             container_name: None,
                             callees: Vec::new(),
+                            calls: Vec::new(),
                         });
                     }
                     return;
@@ -704,6 +728,7 @@ fn extract_symbols(
                             doc,
                             container_name: None,
                             callees: Vec::new(),
+                            calls: Vec::new(),
                         });
                     }
                     return;
@@ -717,8 +742,9 @@ fn extract_symbols(
                         let doc = extract_leading_doc(content, node.start_position().row, lang);
 
                         let mut callees = Vec::new();
+                        let mut calls = Vec::new();
                         if let Some(body) = node.child_by_field_name("body") {
-                            collect_callees(body, source, lang, &mut callees);
+                            collect_callees(body, source, lang, &mut calls, &mut callees);
                         }
                         callees.sort();
                         callees.dedup();
@@ -733,6 +759,7 @@ fn extract_symbols(
                             doc,
                             container_name: None,
                             callees,
+                            calls,
                         });
                     }
                     return;
@@ -746,8 +773,9 @@ fn extract_symbols(
                         let doc = extract_leading_doc(content, node.start_position().row, lang);
 
                         let mut callees = Vec::new();
+                        let mut calls = Vec::new();
                         if let Some(body) = node.child_by_field_name("body") {
-                            collect_callees(body, source, lang, &mut callees);
+                            collect_callees(body, source, lang, &mut calls, &mut callees);
                         }
                         callees.sort();
                         callees.dedup();
@@ -762,6 +790,7 @@ fn extract_symbols(
                             doc,
                             container_name: container_name.map(|s| s.to_string()),
                             callees,
+                            calls,
                         });
                     }
                     return;
@@ -794,8 +823,9 @@ fn extract_symbols(
                                         let doc = extract_leading_doc(content, node.start_position().row, lang);
 
                                         let mut callees = Vec::new();
+                        let mut calls = Vec::new();
                                         if let Some(body) = value_node.child_by_field_name("body") {
-                                            collect_callees(body, source, lang, &mut callees);
+                                            collect_callees(body, source, lang, &mut calls, &mut callees);
                                         }
                                         callees.sort();
                                         callees.dedup();
@@ -810,6 +840,7 @@ fn extract_symbols(
                                             doc,
                                             container_name: container_name.map(|s| s.to_string()),
                                             callees,
+                                            calls,
                                         });
                                     }
                                 }
@@ -864,8 +895,9 @@ fn extract_symbols(
                         let doc = extract_leading_doc(content, node.start_position().row, lang);
 
                         let mut callees = Vec::new();
+                        let mut calls = Vec::new();
                         if let Some(body) = node.child_by_field_name("body") {
-                            collect_callees(body, source, lang, &mut callees);
+                            collect_callees(body, source, lang, &mut calls, &mut callees);
                         }
                         callees.sort();
                         callees.dedup();
@@ -886,6 +918,7 @@ fn extract_symbols(
                             doc,
                             container_name: container,
                             callees,
+                            calls,
                         });
                     }
                     return;
@@ -908,8 +941,9 @@ fn extract_symbols(
                         let doc = extract_leading_doc(content, node.start_position().row, lang);
 
                         let mut callees = Vec::new();
+                        let mut calls = Vec::new();
                         if let Some(body) = node.child_by_field_name("body") {
-                            collect_callees(body, source, lang, &mut callees);
+                            collect_callees(body, source, lang, &mut calls, &mut callees);
                         }
                         callees.sort();
                         callees.dedup();
@@ -924,6 +958,7 @@ fn extract_symbols(
                             doc,
                             container_name: None,
                             callees,
+                            calls,
                         });
                     }
                     return;
@@ -953,8 +988,9 @@ fn extract_symbols(
                         });
 
                         let mut callees = Vec::new();
+                        let mut calls = Vec::new();
                         if let Some(body) = node.child_by_field_name("body") {
-                            collect_callees(body, source, lang, &mut callees);
+                            collect_callees(body, source, lang, &mut calls, &mut callees);
                         }
                         callees.sort();
                         callees.dedup();
@@ -969,6 +1005,7 @@ fn extract_symbols(
                             doc,
                             container_name: container,
                             callees,
+                            calls,
                         });
                     }
                     return;
@@ -1006,6 +1043,7 @@ fn extract_symbols(
                             doc,
                             container_name: None,
                             callees: Vec::new(),
+                            calls: Vec::new(),
                         });
 
                         if let Some(type_node) = node.child_by_field_name("type") {
@@ -1030,6 +1068,7 @@ fn extract_symbols(
                                                     doc: m_doc,
                                                     container_name: Some(name.clone()),
                                                     callees: Vec::new(),
+                            calls: Vec::new(),
                                                 });
                                             }
                                         }
@@ -1058,6 +1097,7 @@ fn extract_symbols(
                             doc,
                             container_name: None,
                             callees: Vec::new(),
+                            calls: Vec::new(),
                         });
                     }
                     return;
@@ -1078,8 +1118,9 @@ fn extract_symbols(
                             let doc = extract_leading_doc(content, node.start_position().row, lang);
 
                             let mut callees = Vec::new();
+                        let mut calls = Vec::new();
                             if let Some(body) = node.child_by_field_name("body") {
-                                collect_callees(body, source, lang, &mut callees);
+                                collect_callees(body, source, lang, &mut calls, &mut callees);
                             }
                             callees.sort();
                             callees.dedup();
@@ -1100,6 +1141,7 @@ fn extract_symbols(
                                 doc,
                                 container_name: container,
                                 callees,
+                                calls,
                             });
                         }
                     }
@@ -1132,6 +1174,7 @@ fn extract_symbols(
                                     doc,
                                     container_name: container,
                                     callees: Vec::new(),
+                            calls: Vec::new(),
                                 });
                             }
                         }
@@ -1156,6 +1199,7 @@ fn extract_symbols(
                             doc,
                             container_name: container_name.map(|s| s.to_string()),
                             callees: Vec::new(),
+                            calls: Vec::new(),
                         });
 
                         if let Some(body) = node.child_by_field_name("body") {
@@ -1190,6 +1234,7 @@ fn extract_symbols(
                             doc,
                             container_name: container_name.map(|s| s.to_string()),
                             callees: Vec::new(),
+                            calls: Vec::new(),
                         });
                     }
                     return;
@@ -1213,6 +1258,7 @@ fn extract_symbols(
                                 doc,
                                 container_name: None,
                                 callees: Vec::new(),
+                            calls: Vec::new(),
                             });
                         }
                     }
@@ -1236,6 +1282,7 @@ fn extract_symbols(
                             doc,
                             container_name: None,
                             callees: Vec::new(),
+                            calls: Vec::new(),
                         });
                     }
                     return;
@@ -1258,6 +1305,7 @@ fn extract_symbols(
                             doc,
                             container_name: container_name.map(|s| s.to_string()),
                             callees: Vec::new(),
+                            calls: Vec::new(),
                         });
 
                         if let Some(body) = node.child_by_field_name("body") {
@@ -1291,83 +1339,83 @@ fn collect_callees(
     node: Node,
     source: &[u8],
     lang: SupportedLanguage,
+    calls: &mut Vec<CallSite>,
     callees: &mut Vec<String>,
 ) {
     let kind = node.kind();
+    let line = node.start_position().row + 1;
 
-    match lang {
+    let callee_opt = match lang {
         SupportedLanguage::Rust => {
             if kind == "call_expression" {
-                if let Some(func) = node.child_by_field_name("function") {
-                    if let Some(c) = extract_rust_callee(func, source) {
-                        if !is_ignored_builtin(&c) {
-                            callees.push(c);
-                        }
-                    }
-                }
+                node.child_by_field_name("function")
+                    .and_then(|func| extract_rust_callee(func, source))
             } else if kind == "macro_invocation" {
                 if let Some(mac) = node.child_by_field_name("macro") {
                     let name = node_text(mac, source);
-                    if !name.is_empty() && !is_ignored_builtin(name) {
-                        callees.push(format!("{}!", name));
+                    if !name.is_empty() {
+                        Some((format!("{}!", name), None))
+                    } else {
+                        None
                     }
+                } else {
+                    None
                 }
+            } else {
+                None
             }
         }
         SupportedLanguage::Python => {
             if kind == "call" {
-                if let Some(func) = node.child_by_field_name("function") {
-                    if let Some(c) = extract_python_callee(func, source) {
-                        if !is_ignored_builtin(&c) {
-                            callees.push(c);
-                        }
-                    }
-                }
+                node.child_by_field_name("function")
+                    .and_then(|func| extract_python_callee(func, source))
+            } else {
+                None
             }
         }
         SupportedLanguage::JavaScript | SupportedLanguage::TypeScript | SupportedLanguage::Tsx => {
             if kind == "call_expression" {
-                if let Some(func) = node.child_by_field_name("function") {
-                    if let Some(c) = extract_js_callee(func, source) {
-                        if !is_ignored_builtin(&c) {
-                            callees.push(c);
-                        }
-                    }
-                }
+                node.child_by_field_name("function")
+                    .and_then(|func| extract_js_callee(func, source))
+            } else {
+                None
             }
         }
         SupportedLanguage::Lua => {
             if kind == "function_call" {
-                if let Some(func) = node.child_by_field_name("name") {
-                    if let Some(c) = extract_lua_callee(func, source) {
-                        if !is_ignored_builtin(&c) {
-                            callees.push(c);
-                        }
-                    }
-                }
+                node.child_by_field_name("name")
+                    .and_then(|func| extract_lua_callee(func, source))
+            } else {
+                None
             }
         }
         SupportedLanguage::Go => {
             if kind == "call_expression" {
-                if let Some(func) = node.child_by_field_name("function") {
-                    if let Some(c) = extract_go_callee(func, source) {
-                        if !is_ignored_builtin(&c) {
-                            callees.push(c);
-                        }
-                    }
-                }
+                node.child_by_field_name("function")
+                    .and_then(|func| extract_go_callee(func, source))
+            } else {
+                None
             }
         }
         SupportedLanguage::C | SupportedLanguage::Cpp => {
             if kind == "call_expression" {
-                if let Some(func) = node.child_by_field_name("function") {
-                    if let Some(c) = extract_c_callee(func, source) {
-                        if !is_ignored_builtin(&c) {
-                            callees.push(c);
-                        }
-                    }
-                }
+                node.child_by_field_name("function")
+                    .and_then(|func| extract_c_callee(func, source))
+            } else {
+                None
             }
+        }
+    };
+
+    if let Some((name, qualifier)) = callee_opt {
+        let is_qual = qualifier.is_some();
+        if !is_ignored_builtin(lang, &name, is_qual) {
+            callees.push(name.clone());
+            calls.push(CallSite {
+                name,
+                qualifier,
+                line,
+            });
         }
     }
 
@@ -1393,22 +1441,28 @@ fn collect_callees(
             };
 
             if !is_nested_func {
-                collect_callees(child, source, lang, callees);
+                collect_callees(child, source, lang, calls, callees);
             }
         }
     }
 }
 
-fn extract_rust_callee(func: Node, source: &[u8]) -> Option<String> {
+fn extract_rust_callee(func: Node, source: &[u8]) -> Option<(String, Option<String>)> {
     match func.kind() {
-        "identifier" => Some(node_text(func, source).to_string()),
+        "identifier" => Some((node_text(func, source).to_string(), None)),
         "field_expression" => {
             let field = func.child_by_field_name("field")?;
-            Some(node_text(field, source).to_string())
+            let value = func.child_by_field_name("value");
+            let name = node_text(field, source).to_string();
+            let qualifier = value.map(|v| node_text(v, source).to_string());
+            Some((name, qualifier))
         }
         "scoped_identifier" => {
             let name = func.child_by_field_name("name")?;
-            Some(node_text(name, source).to_string())
+            let path = func.child_by_field_name("path");
+            let name_str = node_text(name, source).to_string();
+            let qualifier = path.map(|p| node_text(p, source).to_string());
+            Some((name_str, qualifier))
         }
         "generic_function" => {
             let f = func.child_by_field_name("function")?;
@@ -1418,64 +1472,75 @@ fn extract_rust_callee(func: Node, source: &[u8]) -> Option<String> {
     }
 }
 
-fn extract_python_callee(func: Node, source: &[u8]) -> Option<String> {
+fn extract_python_callee(func: Node, source: &[u8]) -> Option<(String, Option<String>)> {
     match func.kind() {
-        "identifier" => Some(node_text(func, source).to_string()),
+        "identifier" => Some((node_text(func, source).to_string(), None)),
         "attribute" => {
             let attr = func.child_by_field_name("attribute")?;
-            Some(node_text(attr, source).to_string())
+            let obj = func.child_by_field_name("object");
+            let name = node_text(attr, source).to_string();
+            let qualifier = obj.map(|o| node_text(o, source).to_string());
+            Some((name, qualifier))
         }
         _ => None,
     }
 }
 
-fn extract_js_callee(func: Node, source: &[u8]) -> Option<String> {
+fn extract_js_callee(func: Node, source: &[u8]) -> Option<(String, Option<String>)> {
     match func.kind() {
-        "identifier" => Some(node_text(func, source).to_string()),
+        "identifier" => Some((node_text(func, source).to_string(), None)),
         "member_expression" => {
             let prop = func.child_by_field_name("property")?;
-            Some(node_text(prop, source).to_string())
+            let obj = func.child_by_field_name("object");
+            let name = node_text(prop, source).to_string();
+            let qualifier = obj.map(|o| node_text(o, source).to_string());
+            Some((name, qualifier))
         }
         _ => None,
     }
 }
 
-fn extract_lua_callee(func: Node, source: &[u8]) -> Option<String> {
+fn extract_lua_callee(func: Node, source: &[u8]) -> Option<(String, Option<String>)> {
     match func.kind() {
-        "identifier" => Some(node_text(func, source).to_string()),
+        "identifier" => Some((node_text(func, source).to_string(), None)),
         "dot_index_expression" => {
             let field = func.child_by_field_name("field")?;
-            Some(node_text(field, source).to_string())
+            let table = func.child_by_field_name("table");
+            Some((node_text(field, source).to_string(), table.map(|t| node_text(t, source).to_string())))
         }
         "method_index_expression" => {
             let method = func.child_by_field_name("method")?;
-            Some(node_text(method, source).to_string())
+            let table = func.child_by_field_name("table");
+            Some((node_text(method, source).to_string(), table.map(|t| node_text(t, source).to_string())))
         }
         _ => None,
     }
 }
 
-fn extract_go_callee(func: Node, source: &[u8]) -> Option<String> {
+fn extract_go_callee(func: Node, source: &[u8]) -> Option<(String, Option<String>)> {
     match func.kind() {
-        "identifier" => Some(node_text(func, source).to_string()),
+        "identifier" => Some((node_text(func, source).to_string(), None)),
         "selector_expression" => {
             let field = func.child_by_field_name("field")?;
-            Some(node_text(field, source).to_string())
+            let operand = func.child_by_field_name("operand");
+            Some((node_text(field, source).to_string(), operand.map(|o| node_text(o, source).to_string())))
         }
         _ => None,
     }
 }
 
-fn extract_c_callee(func: Node, source: &[u8]) -> Option<String> {
+fn extract_c_callee(func: Node, source: &[u8]) -> Option<(String, Option<String>)> {
     match func.kind() {
-        "identifier" | "field_identifier" => Some(node_text(func, source).to_string()),
+        "identifier" | "field_identifier" => Some((node_text(func, source).to_string(), None)),
         "field_expression" => {
             let field = func.child_by_field_name("field")?;
-            Some(node_text(field, source).to_string())
+            let arg = func.child_by_field_name("argument");
+            Some((node_text(field, source).to_string(), arg.map(|a| node_text(a, source).to_string())))
         }
         "scoped_identifier" | "qualified_identifier" => {
             let name = func.child_by_field_name("name")?;
-            Some(node_text(name, source).to_string())
+            let scope = func.child_by_field_name("scope");
+            Some((node_text(name, source).to_string(), scope.map(|s| node_text(s, source).to_string())))
         }
         _ => None,
     }
@@ -1586,8 +1651,9 @@ fn extract_lua_assignment(
 
                 if exp_node.kind() == "function_definition" {
                     let mut callees = Vec::new();
+                        let mut calls = Vec::new();
                     if let Some(body) = exp_node.child_by_field_name("body") {
-                        collect_callees(body, source, lang, &mut callees);
+                        collect_callees(body, source, lang, &mut calls, &mut callees);
                     }
                     callees.sort();
                     callees.dedup();
@@ -1612,6 +1678,7 @@ fn extract_lua_assignment(
                         doc,
                         container_name: container,
                         callees,
+                        calls,
                     });
                 } else if exp_node.kind() == "table_constructor" {
                     let signature = format!("{} = {{}}", node_text(var_node, source));
@@ -1625,6 +1692,7 @@ fn extract_lua_assignment(
                         doc,
                         container_name: container,
                         callees: Vec::new(),
+                            calls: Vec::new(),
                     });
 
                     for f_idx in 0..exp_node.named_child_count() {
@@ -1641,8 +1709,9 @@ fn extract_lua_assignment(
                                         let f_doc = extract_leading_doc(content, field_node.start_position().row, lang);
 
                                         let mut f_callees = Vec::new();
+                        let mut f_calls = Vec::new();
                                         if let Some(body) = f_val_node.child_by_field_name("body") {
-                                            collect_callees(body, source, lang, &mut f_callees);
+                                            collect_callees(body, source, lang, &mut f_calls, &mut f_callees);
                                         }
                                         f_callees.sort();
                                         f_callees.dedup();
@@ -1666,6 +1735,7 @@ fn extract_lua_assignment(
                                             doc: f_doc,
                                             container_name: Some(name.clone()),
                                             callees: f_callees,
+                            calls: f_calls,
                                         });
                                     }
                                 }
@@ -1867,89 +1937,121 @@ fn extract_python_body_doc(node: Node, source: &[u8]) -> Option<String> {
     None
 }
 
-fn is_ignored_builtin(name: &str) -> bool {
-    matches!(
-        name,
-        "println"
-            | "println!"
-            | "print"
-            | "print!"
-            | "eprintln"
-            | "eprintln!"
-            | "eprint"
-            | "eprint!"
-            | "format"
-            | "format!"
-            | "panic"
-            | "panic!"
-            | "vec"
-            | "vec!"
-            | "clone"
-            | "unwrap"
-            | "expect"
-            | "as_ref"
-            | "to_string"
-            | "len"
-            | "is_empty"
-            | "range"
-            | "int"
-            | "str"
-            | "dict"
-            | "list"
-            | "set"
-            | "super"
-            | "log"
-            | "push"
-            | "pop"
-            | "map"
-            | "filter"
-            | "forEach"
-            | "ok"
-            | "err"
-            | "Some"
-            | "None"
-            | "Ok"
-            | "Err"
-            // Lua builtins
-            | "type"
-            | "tostring"
-            | "tonumber"
-            | "pairs"
-            | "ipairs"
-            | "next"
-            | "assert"
-            | "error"
-            | "pcall"
-            | "xpcall"
-            | "setmetatable"
-            | "getmetatable"
-            | "rawget"
-            | "rawset"
-            // Go builtins
-            | "make"
-            | "new"
-            | "append"
-            | "copy"
-            | "delete"
-            | "close"
-            | "recover"
-            | "real"
-            | "imag"
-            // C / C++ common library builtins
-            | "printf"
-            | "fprintf"
-            | "sprintf"
-            | "snprintf"
-            | "scanf"
-            | "malloc"
-            | "calloc"
-            | "realloc"
-            | "free"
-            | "sizeof"
-            | "memset"
-            | "memcpy"
-            | "memmove"
-    )
+pub fn is_ignored_builtin(lang: SupportedLanguage, name: &str, is_qualified: bool) -> bool {
+    // If the call is qualified (e.g. Service::new, self.close(), srv.Run()), NEVER ignore it!
+    if is_qualified {
+        return false;
+    }
+
+    match lang {
+        SupportedLanguage::Rust => matches!(
+            name,
+            "println"
+                | "println!"
+                | "print"
+                | "print!"
+                | "eprintln"
+                | "eprintln!"
+                | "eprint"
+                | "eprint!"
+                | "format"
+                | "format!"
+                | "panic"
+                | "panic!"
+                | "vec"
+                | "vec!"
+                | "Some"
+                | "None"
+                | "Ok"
+                | "Err"
+        ),
+        SupportedLanguage::Python => matches!(
+            name,
+            "print"
+                | "len"
+                | "range"
+                | "int"
+                | "str"
+                | "dict"
+                | "list"
+                | "set"
+                | "tuple"
+                | "bool"
+                | "float"
+                | "super"
+                | "isinstance"
+                | "type"
+                | "enumerate"
+                | "zip"
+                | "open"
+                | "map"
+                | "filter"
+                | "any"
+                | "all"
+        ),
+        SupportedLanguage::JavaScript | SupportedLanguage::TypeScript | SupportedLanguage::Tsx => matches!(
+            name,
+            "require"
+                | "parseInt"
+                | "parseFloat"
+                | "isNaN"
+                | "isFinite"
+                | "encodeURI"
+                | "decodeURI"
+        ),
+        SupportedLanguage::Lua => matches!(
+            name,
+            "type"
+                | "tostring"
+                | "tonumber"
+                | "pairs"
+                | "ipairs"
+                | "next"
+                | "assert"
+                | "error"
+                | "pcall"
+                | "xpcall"
+                | "setmetatable"
+                | "getmetatable"
+                | "rawget"
+                | "rawset"
+                | "print"
+        ),
+        SupportedLanguage::Go => matches!(
+            name,
+            "make"
+                | "new"
+                | "append"
+                | "copy"
+                | "delete"
+                | "close"
+                | "panic"
+                | "recover"
+                | "len"
+                | "cap"
+                | "complex"
+                | "real"
+                | "imag"
+                | "print"
+                | "println"
+        ),
+        SupportedLanguage::C | SupportedLanguage::Cpp => matches!(
+            name,
+            "printf"
+                | "fprintf"
+                | "sprintf"
+                | "snprintf"
+                | "scanf"
+                | "malloc"
+                | "calloc"
+                | "realloc"
+                | "free"
+                | "sizeof"
+                | "memset"
+                | "memcpy"
+                | "memmove"
+        ),
+    }
 }
 
 pub fn is_external_import(specifier: &str, lang: SupportedLanguage) -> bool {

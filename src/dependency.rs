@@ -20,6 +20,13 @@ pub fn get_file_dependencies(store: &CodeStore, path: &str) -> DependencyReport 
     let root = store.root_path();
     let clean_path = clean_relative_path(&root, path);
 
+    // Pre-collect all indexed files once to eliminate repeated O(N) map cloning
+    let all_files: HashSet<String> = store
+        .get_all_file_symbols()
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+
     // 1. Resolve effective target file key from store
     let target_key = resolve_file_key(store, &clean_path).unwrap_or(clean_path.clone());
 
@@ -30,13 +37,13 @@ pub fn get_file_dependencies(store: &CodeStore, path: &str) -> DependencyReport 
 
     for item in raw_imports {
         if item.is_external {
-            if !external_imports.contains(&item.source_path) {
-                external_imports.push(item.source_path.clone());
+            if !external_imports.contains(&item.specifier) {
+                external_imports.push(item.specifier.clone());
             }
         } else {
             // Attempt to resolve relative or module path to an indexed project file
-            let resolved = resolve_import_path(store, &target_key, &item.source_path);
-            let display_name = resolved.unwrap_or(item.source_path);
+            let resolved = resolve_import_path(store, &all_files, &target_key, &item.specifier);
+            let display_name = resolved.unwrap_or(item.specifier);
             if !internal_imports.contains(&display_name) {
                 internal_imports.push(display_name);
             }
@@ -53,11 +60,11 @@ pub fn get_file_dependencies(store: &CodeStore, path: &str) -> DependencyReport 
         }
         for item in items {
             if !item.is_external {
-                if let Some(res) = resolve_import_path(store, other_file, &item.source_path) {
+                if let Some(res) = resolve_import_path(store, &all_files, other_file, &item.specifier) {
                     if res == target_key || path_suffix_matches(&res, &target_key) {
                         imported_by_set.insert(other_file.clone());
                     }
-                } else if path_suffix_matches(&target_key, &item.source_path) {
+                } else if path_suffix_matches(&target_key, &item.specifier) {
                     imported_by_set.insert(other_file.clone());
                 }
             }
@@ -73,7 +80,7 @@ pub fn get_file_dependencies(store: &CodeStore, path: &str) -> DependencyReport 
         let mut neighbors = Vec::new();
         for item in items {
             if !item.is_external {
-                if let Some(res) = resolve_import_path(store, file, &item.source_path) {
+                if let Some(res) = resolve_import_path(store, &all_files, file, &item.specifier) {
                     if !neighbors.contains(&res) {
                         neighbors.push(res);
                     }
@@ -105,52 +112,65 @@ fn resolve_file_key(store: &CodeStore, query: &str) -> Option<String> {
 }
 
 /// Resolves an import source string (e.g. "./store" or "crate::parser") relative to the importer file
-pub fn resolve_import_path(store: &CodeStore, importer_file: &str, source: &str) -> Option<String> {
-    let all_files: HashSet<String> = store
-        .get_all_file_symbols()
-        .into_iter()
-        .map(|(p, _)| p)
-        .collect();
-
+pub fn resolve_import_path(
+    _store: &CodeStore,
+    all_files: &HashSet<String>,
+    importer_file: &str,
+    source: &str,
+) -> Option<String> {
     let normalized_source = source.replace('\\', "/").replace("::", "/");
-    let clean_source = normalized_source.trim_start_matches("crate/").trim_start_matches("super/");
+    let clean_source = normalized_source
+        .trim_start_matches("crate/")
+        .trim_start_matches("super/")
+        .trim_start_matches("./");
 
-    // 1. Direct path check
-    if all_files.contains(clean_source) {
-        return Some(clean_source.to_string());
-    }
-
-    // 2. Relative path resolution from importer directory
-    let importer_dir = Path::new(importer_file).parent().unwrap_or_else(|| Path::new(""));
-    let candidate = importer_dir.join(clean_source);
-    let candidate_str = candidate.to_string_lossy().replace('\\', "/");
-    let clean_cand = candidate_str.trim_start_matches("./");
-
-    if all_files.contains(clean_cand) {
-        return Some(clean_cand.to_string());
-    }
-
-    // 3. Extension append candidates (.rs, .py, .ts, .js, .go, .c, .h, /index.ts, /mod.rs)
     let extensions = [
-        ".rs", ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".c", ".cpp", ".h", ".hpp", ".lua",
+        "", ".rs", ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".c", ".cpp", ".h", ".hpp", ".lua",
         "/mod.rs", "/index.ts", "/index.js",
     ];
 
-    for ext in &extensions {
-        let with_ext = format!("{}{}", clean_cand, ext);
-        if all_files.contains(&with_ext) {
-            return Some(with_ext);
-        }
-        let direct_with_ext = format!("{}{}", clean_source, ext);
-        if all_files.contains(&direct_with_ext) {
-            return Some(direct_with_ext);
-        }
-    }
+    let importer_dir = Path::new(importer_file).parent().unwrap_or_else(|| Path::new(""));
 
-    // 4. Suffix match fallback
-    for file in &all_files {
-        if path_suffix_matches(file, clean_source) {
-            return Some(file.clone());
+    // Iteratively strip trailing segments to resolve imported items (e.g. `service::Service` -> `service.rs`)
+    let mut cur_seg = clean_source.to_string();
+    loop {
+        // Direct match
+        if all_files.contains(&cur_seg) {
+            return Some(cur_seg);
+        }
+
+        // Relative path candidate
+        let cand = importer_dir.join(&cur_seg);
+        let cand_str = cand.to_string_lossy().replace('\\', "/");
+        let clean_cand = cand_str.trim_start_matches("./");
+
+        for ext in &extensions {
+            let with_ext = format!("{}{}", clean_cand, ext);
+            if all_files.contains(&with_ext) {
+                return Some(with_ext);
+            }
+            let direct_with_ext = format!("{}{}", cur_seg, ext);
+            if all_files.contains(&direct_with_ext) {
+                return Some(direct_with_ext);
+            }
+            // Also check under src/
+            let src_candidate = format!("src/{}{}", cur_seg, ext);
+            if all_files.contains(&src_candidate) {
+                return Some(src_candidate);
+            }
+        }
+
+        // Suffix match fallback
+        for file in all_files {
+            if path_suffix_matches(file, &cur_seg) {
+                return Some(file.clone());
+            }
+        }
+
+        if let Some((prefix, _)) = cur_seg.rsplit_once('/') {
+            cur_seg = prefix.to_string();
+        } else {
+            break;
         }
     }
 
@@ -250,6 +270,7 @@ mod tests {
                     doc: None,
                     container_name: None,
                     callees: vec![],
+            calls: Vec::new(),
                 }],
                 callers: HashMap::new(),
                 imports: vec![ImportItem {

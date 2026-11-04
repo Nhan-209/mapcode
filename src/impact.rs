@@ -64,14 +64,21 @@ pub fn compute_impact(store: &CodeStore, target: &str, max_depth: usize) -> Impa
     transitive_callers.sort_by(|a, b| a.file_path.cmp(&b.file_path).then(a.start_line.cmp(&b.start_line)));
 
     // 3. Dependent files (files importing the target's definition file, or the target file itself)
+    let all_files: HashSet<String> = store
+        .get_all_file_symbols()
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+
     let mut target_files = HashSet::new();
     if is_file_target {
         let cleaned = clean_relative_path(&root, clean_target);
-        target_files.insert(cleaned);
-    } else {
-        for def in &cg.definitions {
-            target_files.insert(def.file_path.clone());
+        if all_files.contains(&cleaned) {
+            target_files.insert(cleaned);
         }
+    }
+    for def in &cg.definitions {
+        target_files.insert(def.file_path.clone());
     }
 
     let mut dependent_files_set = HashSet::new();
@@ -83,10 +90,12 @@ pub fn compute_impact(store: &CodeStore, target: &str, max_depth: usize) -> Impa
                 continue;
             }
             for item in items {
-                if !item.is_external
-                    && (item.source_path == *t_file || item.source_path.ends_with(t_file) || t_file.ends_with(&item.source_path))
-                {
-                    dependent_files_set.insert(importer_file.clone());
+                if !item.is_external {
+                    if let Some(res) = crate::dependency::resolve_import_path(store, &all_files, importer_file, &item.specifier) {
+                        if res == *t_file || res.ends_with(t_file) || t_file.ends_with(&res) {
+                            dependent_files_set.insert(importer_file.clone());
+                        }
+                    }
                 }
             }
         }
@@ -172,6 +181,7 @@ mod tests {
                         doc: None,
                         container_name: None,
                         callees: vec![],
+            calls: Vec::new(),
                     },
                     Symbol {
                         name: "handler".to_string(),
@@ -183,6 +193,7 @@ mod tests {
                         doc: None,
                         container_name: None,
                         callees: vec!["calc".to_string()],
+            calls: Vec::new(),
                     },
                 ],
                 callers: HashMap::new(),

@@ -229,6 +229,7 @@ mod tests {
                     doc: None,
                     container_name: None,
                     callees: vec![],
+            calls: Vec::new(),
                 }],
                 callers: HashMap::new(),
                 imports: vec![],

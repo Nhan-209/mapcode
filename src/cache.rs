@@ -14,7 +14,7 @@ use crate::watcher::{relative_to_root, should_ignore, strip_unc_prefix};
 pub const CACHE_DIR_NAME: &str = ".mapcode";
 pub const CACHE_FILE_NAME: &str = "cache.json";
 pub const GIT_FALLBACK_FILE_NAME: &str = "mapcode_cache.json";
-pub const CACHE_SCHEMA_VERSION: u32 = 1;
+pub const CACHE_SCHEMA_VERSION: u32 = 2;
 
 /// Deterministic 64-bit FNV-1a hash algorithm for fast, persistent content hashing.
 pub fn compute_fnv1a_hash(data: &[u8]) -> u64 {
@@ -412,6 +412,7 @@ mod tests {
             doc: Some("test doc".to_string()),
             container_name: None,
             callees: vec!["helper".to_string()],
+            calls: Vec::new(),
         };
         let imp = ImportItem {
             source_path: "src/test.rs".to_string(),

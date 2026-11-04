@@ -325,6 +325,118 @@ pub fn get_tools_list() -> Value {
                 },
                 "required": ["target"]
             }
+        },
+        {
+            "name": "read_symbol",
+            "description": "Read exact source code implementation of a symbol (function, method, class, struct) with line numbers and optional surrounding context lines. MUCH cheaper and faster than reading entire files.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the symbol to read (e.g. 'new', 'parse_file', or 'CodeStore::root_path')"
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Optional file path or filename suffix to disambiguate identical symbol names"
+                    },
+                    "container": {
+                        "type": "string",
+                        "description": "Optional class, struct, or trait name to disambiguate methods"
+                    },
+                    "context_lines": {
+                        "type": "integer",
+                        "description": "Number of context lines to include before and after the symbol body (default 0)"
+                    },
+                    "workspace_path": {
+                        "type": "string",
+                        "description": "Optional workspace root directory to switch to before querying"
+                    }
+                },
+                "required": ["name"]
+            }
+        },
+        {
+            "name": "get_symbol_context",
+            "description": "Get complete 360-degree context for a symbol in ONE tool call: source code slice, incoming callers with call site lines, outgoing callees with signatures, and containing type context.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the function or method to inspect"
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Optional file path or filename suffix to disambiguate identical symbol names"
+                    },
+                    "container": {
+                        "type": "string",
+                        "description": "Optional class or struct name to disambiguate methods"
+                    },
+                    "workspace_path": {
+                        "type": "string",
+                        "description": "Optional workspace root directory to switch to before querying"
+                    }
+                },
+                "required": ["name"]
+            }
+        },
+        {
+            "name": "find_references",
+            "description": "Find all code references (calls, type usages, instantiations, field access) across the codebase for a symbol name, ignoring comments and strings.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the symbol, variable, or type to find usages of"
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Optional file path or glob pattern to filter results"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of references to return (default 50)"
+                    },
+                    "workspace_path": {
+                        "type": "string",
+                        "description": "Optional workspace root directory to switch to before querying"
+                    }
+                },
+                "required": ["name"]
+            }
+        },
+        {
+            "name": "search_text",
+            "description": "Ultra-fast text or regex search across the indexed codebase respecting .gitignore. Far more efficient than running broad shell find/grep.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Text substring or regex pattern to search for"
+                    },
+                    "regex": {
+                        "type": "boolean",
+                        "description": "Whether to treat pattern as a regular expression (default false)"
+                    },
+                    "glob": {
+                        "type": "string",
+                        "description": "Optional file extension or path suffix filter (e.g. '.rs' or 'src/')"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of matching lines to return (default 50)"
+                    },
+                    "workspace_path": {
+                        "type": "string",
+                        "description": "Optional workspace root directory to switch to before querying"
+                    }
+                },
+                "required": ["pattern"]
+            }
         }
     ])
 }
@@ -418,7 +530,7 @@ async fn handle_request(
                     "name": "mapcode",
                     "version": env!("CARGO_PKG_VERSION")
                 },
-                "instructions": "MapCode provides in-memory code maps, symbol outlines, definition lookups, and bidirectional call graphs with zero configuration. You can switch to any project using the 'set_workspace' tool."
+                "instructions": "ALWAYS use MapCode tools before reading files or running broad shell greps:\n- To inspect a function or struct body: use 'read_symbol' (drastically cheaper token cost than reading files).\n- To understand a symbol's full context (code, callers, callees, types): use 'get_symbol_context' in 1 call.\n- To locate symbols or explore outlines: use 'get_file_outline', 'find_definition', 'fuzzy_search_symbols'.\n- To trace relationships: use 'get_call_graph' (bidirectional), 'find_references', 'get_dependencies'.\n- To assess blast radius before editing code: use 'get_impact_analysis'.\n- Results are guaranteed fresh: MapCode automatically refreshes edited files before returning responses."
             });
             JsonRpcResponse {
                 jsonrpc: "2.0",
@@ -532,8 +644,13 @@ async fn handle_tool_call(
                 .and_then(|p| p.as_str())
                 .ok_or_else(|| "Missing required argument 'path'".to_string())?;
             let clean_path = path.trim().trim_matches('"').trim_matches('\'');
+            let format_mode = arguments.get("format").and_then(|f| f.as_str()).unwrap_or("json");
             let outline = store.get_file_outline(clean_path)?;
-            serde_json::to_string_pretty(&outline).map_err(|e| e.to_string())
+            if format_mode == "text" {
+                Ok(crate::format::format_outline_concise(&outline))
+            } else {
+                serde_json::to_string_pretty(&outline).map_err(|e| e.to_string())
+            }
         }
         "find_definition" => {
             let name = arguments
@@ -552,8 +669,106 @@ async fn handle_tool_call(
                 .ok_or_else(|| "Missing required argument 'name'".to_string())?;
             let file_filter = arguments.get("file_path").and_then(|f| f.as_str());
             let container_filter = arguments.get("container").and_then(|c| c.as_str());
+            let format_mode = arguments.get("format").and_then(|f| f.as_str()).unwrap_or("json");
             let cg = store.get_call_graph_advanced(name.trim(), file_filter, container_filter);
-            serde_json::to_string_pretty(&cg).map_err(|e| e.to_string())
+            if format_mode == "text" {
+                Ok(crate::format::format_call_graph_concise(&cg))
+            } else {
+                serde_json::to_string_pretty(&cg).map_err(|e| e.to_string())
+            }
+        }
+        "read_symbol" => {
+            let name = arguments
+                .get("name")
+                .and_then(|n| n.as_str())
+                .ok_or_else(|| "Missing required argument 'name'".to_string())?;
+            let file_filter = arguments.get("file_path").and_then(|f| f.as_str());
+            let container_filter = arguments.get("container").and_then(|c| c.as_str());
+            let context_lines = arguments
+                .get("context_lines")
+                .and_then(|l| l.as_u64().or_else(|| l.as_str().and_then(|s| s.parse::<u64>().ok())))
+                .unwrap_or(0) as usize;
+
+            let defs = store.find_definition_advanced(name.trim(), file_filter, container_filter);
+            if defs.is_empty() {
+                return Err(format!("Symbol '{}' not found in indexed codebase.", name));
+            }
+            let def = &defs[0];
+            let slice = store.read_symbol_slice(&def.file_path, def.start_line, def.end_line, context_lines)?;
+            let sym = crate::store::Symbol {
+                name: def.name.clone(),
+                kind: def.kind,
+                file_path: def.file_path.clone(),
+                start_line: def.start_line,
+                end_line: def.end_line,
+                signature: def.signature.clone(),
+                doc: def.doc.clone(),
+                container_name: def.container_name.clone(),
+                callees: def.callees.clone(),
+                calls: Vec::new(),
+            };
+            Ok(crate::format::format_symbol_code(&sym, &slice))
+        }
+        "get_symbol_context" => {
+            let name = arguments
+                .get("name")
+                .and_then(|n| n.as_str())
+                .ok_or_else(|| "Missing required argument 'name'".to_string())?;
+            let file_filter = arguments.get("file_path").and_then(|f| f.as_str());
+            let container_filter = arguments.get("container").and_then(|c| c.as_str());
+
+            let defs = store.find_definition_advanced(name.trim(), file_filter, container_filter);
+            if defs.is_empty() {
+                return Err(format!("Symbol '{}' not found in indexed codebase.", name));
+            }
+            let def = &defs[0];
+            let slice = store.read_symbol_slice(&def.file_path, def.start_line, def.end_line, 0)?;
+            let cg = store.get_call_graph_advanced(name.trim(), file_filter, container_filter);
+
+            let mut report = format!("=== SYMBOL CONTEXT: {} ===\n", name);
+            let sym = crate::store::Symbol {
+                name: def.name.clone(),
+                kind: def.kind,
+                file_path: def.file_path.clone(),
+                start_line: def.start_line,
+                end_line: def.end_line,
+                signature: def.signature.clone(),
+                doc: def.doc.clone(),
+                container_name: def.container_name.clone(),
+                callees: def.callees.clone(),
+                calls: Vec::new(),
+            };
+            report.push_str(&crate::format::format_symbol_code(&sym, &slice));
+            report.push('\n');
+            report.push_str(&crate::format::format_call_graph_concise(&cg));
+            Ok(report)
+        }
+        "find_references" => {
+            let name = arguments
+                .get("name")
+                .and_then(|n| n.as_str())
+                .ok_or_else(|| "Missing required argument 'name'".to_string())?;
+            let file_filter = arguments.get("file_path").and_then(|f| f.as_str());
+            let limit = arguments
+                .get("limit")
+                .and_then(|l| l.as_u64().or_else(|| l.as_str().and_then(|s| s.parse::<u64>().ok())))
+                .unwrap_or(50) as usize;
+            let matches = crate::search::find_references_in_workspace(store, name.trim(), file_filter, limit)?;
+            serde_json::to_string_pretty(&matches).map_err(|e| e.to_string())
+        }
+        "search_text" => {
+            let pattern = arguments
+                .get("pattern")
+                .and_then(|p| p.as_str())
+                .ok_or_else(|| "Missing required argument 'pattern'".to_string())?;
+            let is_regex = arguments.get("regex").and_then(|r| r.as_bool()).unwrap_or(false);
+            let glob_filter = arguments.get("glob").and_then(|g| g.as_str());
+            let limit = arguments
+                .get("limit")
+                .and_then(|l| l.as_u64().or_else(|| l.as_str().and_then(|s| s.parse::<u64>().ok())))
+                .unwrap_or(50) as usize;
+            let matches = crate::search::search_text_in_workspace(store, pattern.trim(), is_regex, glob_filter, limit)?;
+            serde_json::to_string_pretty(&matches).map_err(|e| e.to_string())
         }
         "fuzzy_search_symbols" => {
             let query = arguments
@@ -660,7 +875,7 @@ mod tests {
         let resp = handle_request(&req, &store, &watcher).await;
         let result = resp.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 11);
+        assert_eq!(tools.len(), 15);
         assert!(tools.iter().any(|t| t["name"] == "set_workspace"));
         assert!(tools.iter().any(|t| t["name"] == "get_file_outline"));
         assert!(tools.iter().any(|t| t["name"] == "find_definition"));
@@ -672,6 +887,10 @@ mod tests {
         assert!(tools.iter().any(|t| t["name"] == "get_entrypoints"));
         assert!(tools.iter().any(|t| t["name"] == "get_architecture_map"));
         assert!(tools.iter().any(|t| t["name"] == "get_impact_analysis"));
+        assert!(tools.iter().any(|t| t["name"] == "read_symbol"));
+        assert!(tools.iter().any(|t| t["name"] == "get_symbol_context"));
+        assert!(tools.iter().any(|t| t["name"] == "find_references"));
+        assert!(tools.iter().any(|t| t["name"] == "search_text"));
     }
 
     #[tokio::test]

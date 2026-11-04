@@ -25,3 +25,7 @@ Thumbs.db
 .mapcode/
 .agents/
 ORIGINAL_REQUEST.md
+
+# Python cache
+__pycache__/
+*.pyc

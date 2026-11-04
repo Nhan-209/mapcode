@@ -4,9 +4,16 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 
 pub use crate::parser::{
-    parse_file, Entrypoint, ImportItem, ParsedFileResult, SupportedLanguage, Symbol, SymbolKind,
-    SymbolRef, TypeRelation,
+    parse_file, parse_file_result, CallSite, Entrypoint, ImportItem, ParsedFileResult,
+    SupportedLanguage, Symbol, SymbolKind, SymbolRef, TypeRelation,
 };
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileMeta {
+    pub mtime_nanos: u64,
+    pub file_size: u64,
+    pub content_hash: u64,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
@@ -86,6 +93,7 @@ pub struct CodeStore {
     file_types: DashMap<String, Vec<TypeRelation>>,
     type_relations: DashMap<String, Vec<TypeRelation>>,
     file_entrypoints: DashMap<String, Vec<Entrypoint>>,
+    file_meta: DashMap<String, FileMeta>,
 }
 
 impl CodeStore {
@@ -99,6 +107,7 @@ impl CodeStore {
             file_types: DashMap::new(),
             type_relations: DashMap::new(),
             file_entrypoints: DashMap::new(),
+            file_meta: DashMap::new(),
         }
     }
 
@@ -118,6 +127,7 @@ impl CodeStore {
         self.file_types.clear();
         self.type_relations.clear();
         self.file_entrypoints.clear();
+        self.file_meta.clear();
     }
 
     pub fn remove_file(&self, relative_path: &str) {
@@ -345,13 +355,14 @@ impl CodeStore {
         if full_path.is_file() {
             if let Some(lang) = SupportedLanguage::from_path(&full_path) {
                 if let Ok(content) = std::fs::read_to_string(&full_path) {
-                    if let Ok(syms) = parse_file(&clean_path, &content, lang) {
-                        self.update_file(&clean_path, syms.clone());
-                        let mut sorted = syms;
+                    if let Ok(result) = parse_file_result(&clean_path, &content, lang) {
+                        let mut sorted = result.symbols.clone();
                         sorted.sort_by_key(|s| s.start_line);
+                        let total = sorted.len();
+                        self.update_file_result(&clean_path, result);
                         return Ok(FileOutline {
                             file_path: clean_path,
-                            total_symbols: sorted.len(),
+                            total_symbols: total,
                             symbols: sorted,
                         });
                     }
@@ -472,15 +483,57 @@ impl CodeStore {
             definitions.retain(|d| path_suffix_matches(&d.file_path, ff));
         }
 
-        let mut callers: Vec<SymbolRef> = self.callers.get(query_name)
+        let mut raw_callers: Vec<SymbolRef> = self.callers.get(query_name)
             .map(|c| c.value().iter().cloned().collect())
             .unwrap_or_default();
 
         if let Some(ff) = file_filter {
-            callers.retain(|c| path_suffix_matches(&c.file_path, ff));
+            raw_callers.retain(|c| path_suffix_matches(&c.file_path, ff));
         }
 
-        callers.sort_by(|a, b| a.file_path.cmp(&b.file_path).then(a.start_line.cmp(&b.start_line)));
+        // Precision verification: filter raw callers via resolve_call_site
+        // Only accept a caller if its call site actually resolves to one of the requested definitions
+        let mut verified_callers = Vec::new();
+        if !definitions.is_empty() {
+            let def_signatures: HashSet<(String, usize)> = definitions
+                .iter()
+                .map(|d| (d.file_path.clone(), d.start_line))
+                .collect();
+
+            for caller_ref in raw_callers {
+                let caller_sym = self.file_symbols.get(&caller_ref.file_path).and_then(|syms| {
+                    syms.iter().find(|s| s.name == caller_ref.name && s.start_line == caller_ref.start_line).cloned()
+                });
+
+                if let Some(sym) = caller_sym {
+                    let mut matched = false;
+                    for cs in &sym.calls {
+                        if cs.name == query_name {
+                            let resolved = crate::resolve::resolve_call_site(
+                                self,
+                                &sym.file_path,
+                                sym.container_name.as_deref(),
+                                cs,
+                            );
+                            if resolved.iter().any(|r| def_signatures.contains(&(r.target.file_path.clone(), r.target.start_line))) {
+                                matched = true;
+                                break;
+                            }
+                        }
+                    }
+                    if matched {
+                        verified_callers.push(caller_ref);
+                    }
+                } else {
+                    verified_callers.push(caller_ref);
+                }
+            }
+        } else {
+            verified_callers = raw_callers;
+        }
+
+        verified_callers.sort_by(|a, b| a.file_path.cmp(&b.file_path).then(a.start_line.cmp(&b.start_line)));
+        let callers = verified_callers;
 
         // Resolve callees called by definitions of this symbol
         let mut callee_set = HashSet::new();
@@ -489,6 +542,9 @@ impl CodeStore {
                 if let Some(sym) = syms.iter().find(|s| s.name == def.name && s.start_line == def.start_line) {
                     for callee in &sym.callees {
                         callee_set.insert(callee.clone());
+                    }
+                    for cs in &sym.calls {
+                        callee_set.insert(cs.name.clone());
                     }
                 }
             }
@@ -645,6 +701,81 @@ impl CodeStore {
             callees,
         }
     }
+
+    pub fn check_and_refresh_file(&self, relative_path: &str) -> bool {
+        let root = self.root_path();
+        let clean = clean_relative_path(&root, relative_path);
+        let full = root.join(&clean);
+        if !full.is_file() {
+            return false;
+        }
+
+        let meta = match std::fs::metadata(&full) {
+            Ok(m) => m,
+            Err(_) => return false,
+        };
+
+        let mtime = meta.modified().ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        let size = meta.len();
+
+        let needs_reload = if let Some(cached_meta) = self.file_meta.get(&clean) {
+            cached_meta.mtime_nanos != mtime || cached_meta.file_size != size
+        } else {
+            !self.file_symbols.contains_key(&clean)
+        };
+
+        if needs_reload {
+            if let Some(lang) = SupportedLanguage::from_path(&full) {
+                if let Ok(content) = std::fs::read_to_string(&full) {
+                    if let Ok(result) = parse_file_result(&clean, &content, lang) {
+                        self.update_file_result(&clean, result);
+                        self.file_meta.insert(clean.clone(), FileMeta {
+                            mtime_nanos: mtime,
+                            file_size: size,
+                            content_hash: 0,
+                        });
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    pub fn read_symbol_slice(
+        &self,
+        file_path: &str,
+        start_line: usize,
+        end_line: usize,
+        context_lines: usize,
+    ) -> Result<String, String> {
+        let root = self.root_path();
+        let clean = clean_relative_path(&root, file_path);
+        self.check_and_refresh_file(&clean);
+        let full = root.join(&clean);
+        let content = std::fs::read_to_string(&full)
+            .map_err(|e| format!("Failed to read file '{}': {}", clean, e))?;
+
+        let lines: Vec<&str> = content.lines().collect();
+        if lines.is_empty() {
+            return Ok(String::new());
+        }
+
+        let actual_start = start_line.saturating_sub(1).saturating_sub(context_lines);
+        let actual_end = (end_line + context_lines).min(lines.len());
+
+        let mut out = String::new();
+        for idx in actual_start..actual_end {
+            let line_num = idx + 1;
+            let is_symbol_body = line_num >= start_line && line_num <= end_line;
+            let marker = if is_symbol_body { " " } else { "~" };
+            out.push_str(&format!("{:>5}{} | {}\n", line_num, marker, lines[idx]));
+        }
+        Ok(out)
+    }
 }
 
 pub fn clean_relative_path(root: &Path, input: &str) -> String {
@@ -737,6 +868,7 @@ mod tests {
             doc: Some("A caller function".to_string()),
             container_name: None,
             callees: vec!["worker_fn".to_string()],
+            calls: Vec::new(),
         };
 
         let sym2 = Symbol {
@@ -749,6 +881,7 @@ mod tests {
             doc: None,
             container_name: None,
             callees: vec![],
+            calls: Vec::new(),
         };
 
         store.update_file("src/main.rs", vec![sym1]);
@@ -803,6 +936,7 @@ mod tests {
             doc: None,
             container_name: None,
             callees: vec!["task_a".to_string()],
+            calls: Vec::new(),
         };
 
         // File B has 'run' which calls 'task_b'
@@ -816,6 +950,7 @@ mod tests {
             doc: None,
             container_name: None,
             callees: vec!["task_b".to_string()],
+            calls: Vec::new(),
         };
 
         store.update_file("src/a.rs", vec![sym_a]);
@@ -857,6 +992,7 @@ mod tests {
             doc: None,
             container_name: Some("Calculator".to_string()),
             callees: vec![],
+            calls: Vec::new(),
         };
 
         let import = ImportItem {
@@ -926,6 +1062,7 @@ mod tests {
             doc: None,
             container_name: None,
             callees: vec![],
+            calls: Vec::new(),
         };
 
         let sym_b = Symbol {
@@ -938,6 +1075,7 @@ mod tests {
             doc: None,
             container_name: None,
             callees: vec![],
+            calls: Vec::new(),
         };
 
         let sym_other = Symbol {
@@ -950,6 +1088,7 @@ mod tests {
             doc: None,
             container_name: None,
             callees: vec![],
+            calls: Vec::new(),
         };
 
         store.update_file("src/module/a.rs", vec![sym_a]);
