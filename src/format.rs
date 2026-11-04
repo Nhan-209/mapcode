@@ -80,3 +80,21 @@ pub fn format_symbol_code(sym: &Symbol, code_slice: &str) -> String {
     out.push_str("```\n");
     out
 }
+
+/// One line per match: `path:line: text` (definitions tagged), grouped implicitly by file order.
+pub fn format_matches(matches: &[crate::search::TextMatch], limit: usize, what: &str) -> String {
+    if matches.is_empty() {
+        return format!("No {} found.\n", what);
+    }
+    let cap = if limit == 0 { 50 } else { limit.min(500) };
+    let mut out = format!("{} {}", matches.len(), what);
+    if matches.len() >= cap {
+        out.push_str(&format!(" (truncated at limit={}; raise 'limit' or narrow with a file filter)", cap));
+    }
+    out.push('\n');
+    for m in matches {
+        let tag = if m.is_definition { " [def]" } else { "" };
+        out.push_str(&format!("{}:{}:{} {}\n", m.file_path, m.line_number, tag, m.line_text));
+    }
+    out
+}

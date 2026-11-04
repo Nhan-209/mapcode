@@ -58,21 +58,22 @@ pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
 }
 
 fn url_decode(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '%' {
-            let h1 = chars.next().unwrap_or('0');
-            let h2 = chars.next().unwrap_or('0');
-            let hex_str = format!("{}{}", h1, h2);
-            if let Ok(val) = u8::from_str_radix(&hex_str, 16) {
-                result.push(val as char);
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = |b: u8| (b as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
             }
-        } else {
-            result.push(c);
         }
+        out.push(bytes[i]);
+        i += 1;
     }
-    result
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 pub fn extract_workspace_from_init(params: Option<&Value>) -> Option<PathBuf> {
@@ -133,6 +134,11 @@ pub fn get_tools_list() -> Value {
                         "type": "string",
                         "description": "Relative path to the file within the project (e.g. 'src/main.rs')"
                     },
+                    "format": {
+                        "type": "string",
+                        "enum": ["json", "text"],
+                        "description": "Use 'text' for a compact line-per-symbol outline (~90% fewer tokens). Default 'json'."
+                    },
                     "workspace_path": {
                         "type": "string",
                         "description": "Optional workspace root directory to switch to before querying"
@@ -184,6 +190,11 @@ pub fn get_tools_list() -> Value {
                     "container": {
                         "type": "string",
                         "description": "Optional class or struct name to disambiguate methods"
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["json", "text"],
+                        "description": "Use 'text' for a compact callers/callees listing (far fewer tokens). Default 'json'."
                     },
                     "workspace_path": {
                         "type": "string",
@@ -530,7 +541,7 @@ async fn handle_request(
                     "name": "mapcode",
                     "version": env!("CARGO_PKG_VERSION")
                 },
-                "instructions": "ALWAYS use MapCode tools before reading files or running broad shell greps:\n- To inspect a function or struct body: use 'read_symbol' (drastically cheaper token cost than reading files).\n- To understand a symbol's full context (code, callers, callees, types): use 'get_symbol_context' in 1 call.\n- To locate symbols or explore outlines: use 'get_file_outline', 'find_definition', 'fuzzy_search_symbols'.\n- To trace relationships: use 'get_call_graph' (bidirectional), 'find_references', 'get_dependencies'.\n- To assess blast radius before editing code: use 'get_impact_analysis'.\n- Results are guaranteed fresh: MapCode automatically refreshes edited files before returning responses."
+                "instructions": "ALWAYS use MapCode tools before reading files or running broad shell greps:\n- To inspect a function or struct body: use 'read_symbol' (drastically cheaper token cost than reading files).\n- To understand a symbol's full context (code, callers, callees, types): use 'get_symbol_context' in 1 call.\n- To locate symbols or explore outlines: use 'get_file_outline', 'find_definition', 'fuzzy_search_symbols'.\n- Pass format:'text' to get_file_outline / get_call_graph for compact output.\n- For raw text/regex search use 'search_text' (supports glob like '*.rs' or 'src/'); 'find_references' returns whole-word usages in source files with [def] tags.\n- To trace relationships: use 'get_call_graph' (bidirectional), 'find_references', 'get_dependencies'.\n- To assess blast radius before editing code: use 'get_impact_analysis'.\n- Results are guaranteed fresh: MapCode automatically refreshes edited files before returning responses."
             });
             JsonRpcResponse {
                 jsonrpc: "2.0",
@@ -600,6 +611,70 @@ async fn handle_request(
     }
 }
 
+fn arg_str<'a>(args: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|k| args.get(*k).and_then(|v| v.as_str()))
+}
+
+fn arg_usize(args: &Value, keys: &[&str]) -> Option<usize> {
+    keys.iter().find_map(|k| {
+        args.get(*k)
+            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())))
+            .map(|n| n as usize)
+    })
+}
+
+fn require_str<'a>(args: &'a Value, keys: &[&str]) -> Result<&'a str, String> {
+    arg_str(args, keys).ok_or_else(|| {
+        format!("Missing required argument '{}' (accepted: {})", keys[0], keys.join(", "))
+    })
+}
+
+/// Error text for an unknown symbol, with close candidates so the caller can retry immediately.
+fn symbol_not_found(store: &CodeStore, name: &str) -> String {
+    let bare = name.rsplit([':', '.']).next().unwrap_or(name);
+    let cands = store.fuzzy_search_symbols(bare, None, 5);
+    if cands.is_empty() {
+        format!("Symbol '{}' not found in indexed codebase. Try 'search_text' for raw text.", name)
+    } else {
+        let list: Vec<String> = cands
+            .iter()
+            .map(|c| format!("{}{} ({}:{})", c.container_name.as_deref().map(|x| format!("{}::", x)).unwrap_or_default(), c.name, c.file_path, c.line))
+            .collect();
+        format!("Symbol '{}' not found. Did you mean: {}", name, list.join(", "))
+    }
+}
+
+/// Footer listing other definitions that were not chosen, so ambiguity is never silent.
+fn ambiguity_note(defs: &[crate::store::DefinitionResult]) -> String {
+    if defs.len() < 2 {
+        return String::new();
+    }
+    let others: Vec<String> = defs
+        .iter()
+        .skip(1)
+        .take(8)
+        .map(|d| format!("{}{} ({}:{})", d.container_name.as_deref().map(|x| format!("{}::", x)).unwrap_or_default(), d.name, d.file_path, d.start_line))
+        .collect();
+    format!(
+        "\nNOTE: {} definitions match; showing the first. Others: {}. Pass 'file_path' or 'container' to choose.\n",
+        defs.len(),
+        others.join(", ")
+    )
+}
+
+/// Drops the per-call-site `calls` detail (internal resolver input) from outline JSON.
+fn outline_json(outline: &crate::store::FileOutline) -> Result<String, String> {
+    let mut v = serde_json::to_value(outline).map_err(|e| e.to_string())?;
+    if let Some(syms) = v.get_mut("symbols").and_then(|s| s.as_array_mut()) {
+        for s in syms {
+            if let Some(o) = s.as_object_mut() {
+                o.remove("calls");
+            }
+        }
+    }
+    serde_json::to_string(&v).map_err(|e| e.to_string())
+}
+
 async fn handle_tool_call(
     params: Option<&Value>,
     store: &Arc<CodeStore>,
@@ -636,7 +711,7 @@ async fn handle_tool_call(
             };
             watcher.switch_workspace(target_dir)?;
             let stats = store.get_project_stats();
-            serde_json::to_string_pretty(&stats).map_err(|e| e.to_string())
+            serde_json::to_string(&stats).map_err(|e| e.to_string())
         }
         "get_file_outline" => {
             let path = arguments
@@ -649,7 +724,7 @@ async fn handle_tool_call(
             if format_mode == "text" {
                 Ok(crate::format::format_outline_concise(&outline))
             } else {
-                serde_json::to_string_pretty(&outline).map_err(|e| e.to_string())
+                outline_json(&outline)
             }
         }
         "find_definition" => {
@@ -660,7 +735,10 @@ async fn handle_tool_call(
             let file_filter = arguments.get("file_path").and_then(|f| f.as_str());
             let container_filter = arguments.get("container").and_then(|c| c.as_str());
             let defs = store.find_definition_advanced(name.trim(), file_filter, container_filter);
-            serde_json::to_string_pretty(&defs).map_err(|e| e.to_string())
+            if defs.is_empty() {
+                return Err(symbol_not_found(store, name));
+            }
+            serde_json::to_string(&defs).map_err(|e| e.to_string())
         }
         "get_call_graph" => {
             let name = arguments
@@ -674,7 +752,7 @@ async fn handle_tool_call(
             if format_mode == "text" {
                 Ok(crate::format::format_call_graph_concise(&cg))
             } else {
-                serde_json::to_string_pretty(&cg).map_err(|e| e.to_string())
+                serde_json::to_string(&cg).map_err(|e| e.to_string())
             }
         }
         "read_symbol" => {
@@ -691,7 +769,7 @@ async fn handle_tool_call(
 
             let defs = store.find_definition_advanced(name.trim(), file_filter, container_filter);
             if defs.is_empty() {
-                return Err(format!("Symbol '{}' not found in indexed codebase.", name));
+                return Err(symbol_not_found(store, name));
             }
             let def = &defs[0];
             let slice = store.read_symbol_slice(&def.file_path, def.start_line, def.end_line, context_lines)?;
@@ -707,7 +785,7 @@ async fn handle_tool_call(
                 callees: def.callees.clone(),
                 calls: Vec::new(),
             };
-            Ok(crate::format::format_symbol_code(&sym, &slice))
+            Ok(crate::format::format_symbol_code(&sym, &slice) + &ambiguity_note(&defs))
         }
         "get_symbol_context" => {
             let name = arguments
@@ -719,7 +797,7 @@ async fn handle_tool_call(
 
             let defs = store.find_definition_advanced(name.trim(), file_filter, container_filter);
             if defs.is_empty() {
-                return Err(format!("Symbol '{}' not found in indexed codebase.", name));
+                return Err(symbol_not_found(store, name));
             }
             let def = &defs[0];
             let slice = store.read_symbol_slice(&def.file_path, def.start_line, def.end_line, 0)?;
@@ -741,34 +819,23 @@ async fn handle_tool_call(
             report.push_str(&crate::format::format_symbol_code(&sym, &slice));
             report.push('\n');
             report.push_str(&crate::format::format_call_graph_concise(&cg));
+            report.push_str(&ambiguity_note(&defs));
             Ok(report)
         }
         "find_references" => {
-            let name = arguments
-                .get("name")
-                .and_then(|n| n.as_str())
-                .ok_or_else(|| "Missing required argument 'name'".to_string())?;
-            let file_filter = arguments.get("file_path").and_then(|f| f.as_str());
-            let limit = arguments
-                .get("limit")
-                .and_then(|l| l.as_u64().or_else(|| l.as_str().and_then(|s| s.parse::<u64>().ok())))
-                .unwrap_or(50) as usize;
+            let name = require_str(&arguments, &["name", "symbol"])?;
+            let file_filter = arg_str(&arguments, &["file_path", "glob"]);
+            let limit = arg_usize(&arguments, &["limit", "max_results"]).unwrap_or(50);
             let matches = crate::search::find_references_in_workspace(store, name.trim(), file_filter, limit)?;
-            serde_json::to_string_pretty(&matches).map_err(|e| e.to_string())
+            Ok(crate::format::format_matches(&matches, limit, "references"))
         }
         "search_text" => {
-            let pattern = arguments
-                .get("pattern")
-                .and_then(|p| p.as_str())
-                .ok_or_else(|| "Missing required argument 'pattern'".to_string())?;
+            let pattern = require_str(&arguments, &["pattern", "query"])?;
             let is_regex = arguments.get("regex").and_then(|r| r.as_bool()).unwrap_or(false);
-            let glob_filter = arguments.get("glob").and_then(|g| g.as_str());
-            let limit = arguments
-                .get("limit")
-                .and_then(|l| l.as_u64().or_else(|| l.as_str().and_then(|s| s.parse::<u64>().ok())))
-                .unwrap_or(50) as usize;
+            let glob_filter = arg_str(&arguments, &["glob", "file_pattern", "file_path"]);
+            let limit = arg_usize(&arguments, &["limit", "max_results"]).unwrap_or(50);
             let matches = crate::search::search_text_in_workspace(store, pattern.trim(), is_regex, glob_filter, limit)?;
-            serde_json::to_string_pretty(&matches).map_err(|e| e.to_string())
+            Ok(crate::format::format_matches(&matches, limit, "matches"))
         }
         "fuzzy_search_symbols" => {
             let query = arguments
@@ -782,11 +849,11 @@ async fn handle_tool_call(
                 .map(|l| l as usize)
                 .unwrap_or(30);
             let matches = store.fuzzy_search_symbols(query.trim(), kind, limit);
-            serde_json::to_string_pretty(&matches).map_err(|e| e.to_string())
+            serde_json::to_string(&matches).map_err(|e| e.to_string())
         }
         "get_project_stats" => {
             let stats = store.get_project_stats();
-            serde_json::to_string_pretty(&stats).map_err(|e| e.to_string())
+            serde_json::to_string(&stats).map_err(|e| e.to_string())
         }
         "get_dependencies" => {
             let path = arguments
@@ -794,7 +861,7 @@ async fn handle_tool_call(
                 .and_then(|p| p.as_str())
                 .ok_or_else(|| "Missing required argument 'path'".to_string())?;
             let report = get_file_dependencies(store, path.trim());
-            serde_json::to_string_pretty(&report).map_err(|e| e.to_string())
+            serde_json::to_string(&report).map_err(|e| e.to_string())
         }
         "get_type_graph" => {
             let name = arguments
@@ -802,14 +869,14 @@ async fn handle_tool_call(
                 .and_then(|n| n.as_str())
                 .ok_or_else(|| "Missing required argument 'name'".to_string())?;
             match get_type_hierarchy(store, name.trim()) {
-                Some(report) => serde_json::to_string_pretty(&report).map_err(|e| e.to_string()),
+                Some(report) => serde_json::to_string(&report).map_err(|e| e.to_string()),
                 None => Err(format!("Type '{}' not found in indexed codebase.", name)),
             }
         }
         "get_entrypoints" => {
             let category = arguments.get("category").and_then(|c| c.as_str());
             let entrypoints = get_categorized_entrypoints(store, category);
-            serde_json::to_string_pretty(&entrypoints).map_err(|e| e.to_string())
+            serde_json::to_string(&entrypoints).map_err(|e| e.to_string())
         }
         "get_architecture_map" => {
             let max_depth = arguments
@@ -818,7 +885,7 @@ async fn handle_tool_call(
                 .map(|d| d as usize)
                 .unwrap_or(3);
             let tree = get_architecture_tree(store, max_depth);
-            serde_json::to_string_pretty(&tree).map_err(|e| e.to_string())
+            serde_json::to_string(&tree).map_err(|e| e.to_string())
         }
         "get_impact_analysis" => {
             let target = arguments
@@ -831,7 +898,7 @@ async fn handle_tool_call(
                 .map(|d| d as usize)
                 .unwrap_or(3);
             let impact = compute_impact(store, target.trim(), max_depth);
-            serde_json::to_string_pretty(&impact).map_err(|e| e.to_string())
+            serde_json::to_string(&impact).map_err(|e| e.to_string())
         }
         _ => Err(format!("Unknown tool: '{}'", tool_name)),
     }
