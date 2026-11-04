@@ -91,7 +91,7 @@ pub fn compute_impact(store: &CodeStore, target: &str, max_depth: usize) -> Impa
             }
             for item in items {
                 if !item.is_external {
-                    if let Some(res) = crate::dependency::resolve_import_path(store, &all_files, importer_file, &item.specifier) {
+                    if let Some(res) = crate::dependency::resolve_import_path_with_files(&all_files, importer_file, &item.specifier) {
                         if res == *t_file || res.ends_with(t_file) || t_file.ends_with(&res) {
                             dependent_files_set.insert(importer_file.clone());
                         }

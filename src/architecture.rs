@@ -81,7 +81,7 @@ pub fn get_architecture_tree(store: &CodeStore, max_depth: usize) -> ModuleNode 
 
         for item in items {
             if !item.is_external {
-                if let Some(imported_file) = resolve_import_path(store, importer_file, &item.source_path) {
+                if let Some(imported_file) = resolve_import_path(store, importer_file, &item.specifier) {
                     if let Some(target_mod) = file_to_module.get(&imported_file) {
                         if target_mod != &importer_mod {
                             module_efferent

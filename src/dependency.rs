@@ -42,7 +42,7 @@ pub fn get_file_dependencies(store: &CodeStore, path: &str) -> DependencyReport 
             }
         } else {
             // Attempt to resolve relative or module path to an indexed project file
-            let resolved = resolve_import_path(store, &all_files, &target_key, &item.specifier);
+            let resolved = resolve_import_path_with_files(&all_files, &target_key, &item.specifier);
             let display_name = resolved.unwrap_or(item.specifier);
             if !internal_imports.contains(&display_name) {
                 internal_imports.push(display_name);
@@ -60,7 +60,7 @@ pub fn get_file_dependencies(store: &CodeStore, path: &str) -> DependencyReport 
         }
         for item in items {
             if !item.is_external {
-                if let Some(res) = resolve_import_path(store, &all_files, other_file, &item.specifier) {
+                if let Some(res) = resolve_import_path_with_files(&all_files, other_file, &item.specifier) {
                     if res == target_key || path_suffix_matches(&res, &target_key) {
                         imported_by_set.insert(other_file.clone());
                     }
@@ -80,7 +80,7 @@ pub fn get_file_dependencies(store: &CodeStore, path: &str) -> DependencyReport 
         let mut neighbors = Vec::new();
         for item in items {
             if !item.is_external {
-                if let Some(res) = resolve_import_path(store, &all_files, file, &item.specifier) {
+                if let Some(res) = resolve_import_path_with_files(&all_files, file, &item.specifier) {
                     if !neighbors.contains(&res) {
                         neighbors.push(res);
                     }
@@ -113,7 +113,19 @@ fn resolve_file_key(store: &CodeStore, query: &str) -> Option<String> {
 
 /// Resolves an import source string (e.g. "./store" or "crate::parser") relative to the importer file
 pub fn resolve_import_path(
-    _store: &CodeStore,
+    store: &CodeStore,
+    importer_file: &str,
+    source: &str,
+) -> Option<String> {
+    let all_files: HashSet<String> = store
+        .get_all_file_symbols()
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+    resolve_import_path_with_files(&all_files, importer_file, source)
+}
+
+pub fn resolve_import_path_with_files(
     all_files: &HashSet<String>,
     importer_file: &str,
     source: &str,
